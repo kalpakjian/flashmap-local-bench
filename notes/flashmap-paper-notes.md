@@ -503,6 +503,31 @@ torch 2.14.1+cu130 / CUDA 13.0 / Python 3.12 uv venv）：
   端到端數字必須用 vLLM（Phase 2，需 Linux）才有可比性。
 - `token_exact` 為 **7/12**，不一致的 5 題即 bf16 近似並列假象（§7.7）——與 FINDINGS 的預期一致。
 
+### 7.9 與上游官方 repo 的對齊（2026-10-26 查證）
+
+上游：[github.com/al-jshen/flashmap](https://github.com/al-jshen/flashmap)（MIT）。
+本 lab 對齊的 commit = **`cd5b45bd`**（2026-10-20，`master` HEAD，截至 2026-10-26 無更新），
+PyPI `flashmap==0.1.0` 與上游 `pyproject.toml` 的 version 一致。
+
+上游有 `examples/benchmark.py`，是這件事的**參考實作**——本 lab 原先與它有幾處實質差異，已全部對齊：
+
+| 項目 | 上游 | 本 lab（對齊後） |
+|---|---|---|
+| prompt 來源 | `--dataset gsm8k/humaneval/mt-bench`（**論文用的正是這 80 筆 DFlash 格式**） | 原本是自製 `prompts.json` → **已加 `--dataset`** |
+| 無損性判準 | `torch.equal(baseline, output.sequences)` | 相同（並記錄 `first_diff` / `prefix_ok`） |
+| 基準簽章 | 不傳 `attention_mask`；greedy 時 `temperature=1.0` | 相同 |
+| 接受長度 | `sum(acceptance_lengths) / rounds`（逐輪陣列） | **已改用逐輪陣列**（原本只讀平均欄位） |
+| 隨機性 | `torch.Generator(device="cuda").manual_seed(seed)` | **已加 `--seed`** |
+| 暖機 | 先跑 32 token spec_generate + 8 token generate | **已加** |
+| T>0 的基準 | `do_sample=True, temperature=T, top_p=1.0, top_k=0` | **已加 `--temperature`** |
+
+**對齊後的驗證**：用上游的 GSM8K 格式在本機跑 8 題（Windows / 4090 / bf16 / 64 tokens），
+平均 **γ = 7.254**；論文 Table 1 的 GSM8K γ = **7.69**（80 題、2048 tokens）——量測協定一致，結果吻合。
+（先前用自製題目得到的 γ=6.73 之所以偏低，是因為題目組成不同，不是量測錯誤。）
+
+**lab 相對上游額外提供的**：端到端 vLLM 加速比、Windows 原生支援、
+bf16 近似並列的機制證明（pass3～pass6）、伺服器端輸出比對與報告自動生成。
+
 
 
 ---

@@ -31,6 +31,38 @@ DRAFT_MODEL = os.environ.get("DRAFT_MODEL", "j-shen/FlashMap-Qwen3-8B")
 
 DTYPES = {"bfloat16": "bfloat16", "float16": "float16", "float32": "float32"}
 
+# ---------------------------------------------------------------------------
+# 上游 examples/benchmark.py 的 prompt 格式。
+# 論文與 DFlash 的評估用的是「每個 dataset 取前 80 筆」，格式如下；
+# 直接沿用上游的定義，才能與論文 Table 1 的 γ 直接對照。
+# ---------------------------------------------------------------------------
+DATASETS = {
+    "gsm8k": (
+        "openai/gsm8k", "main", "test",
+        lambda row: f"{row['question']}\nPlease reason step by step, and put your final answer within \\boxed{{}}.",
+    ),
+    "humaneval": (
+        "openai/openai_humaneval", None, "test",
+        lambda row: "Write a solution to the following problem and make sure that it passes the tests:\n"
+        f"```python\n{row['prompt']}\n```",
+    ),
+    "mt-bench": ("HuggingFaceH4/mt_bench_prompts", None, "train", lambda row: row["prompt"][0]),
+}
+
+CATEGORY_OF = {"gsm8k": "math", "humaneval": "code", "mt-bench": "chat"}
+
+
+def load_dataset_prompts(name, num_prompts):
+    """沿用上游的 dataset 選取與 prompt 格式（gsm8k / humaneval / mt-bench）。"""
+    from datasets import load_dataset
+
+    path, subset, split, field = DATASETS[name]
+    rows = load_dataset(path, subset, split=split)
+    return [
+        {"prompt": field(row), "category": CATEGORY_OF.get(name, name)}
+        for row in rows.select(range(min(num_prompts, len(rows))))
+    ]
+
 
 def build_inputs(tokenizer, prompt, enable_thinking=False):
     """套用 Qwen3 chat template；enable_thinking=False 對齊論文的 thinking off 設定。"""
@@ -45,7 +77,8 @@ def build_inputs(tokenizer, prompt, enable_thinking=False):
 
 
 def measure_acceptance(prompts, max_new_tokens=512, num_steps=1, target_model=TARGET_MODEL,
-                       draft_model=DRAFT_MODEL, verbose=True, dtype="bfloat16"):
+                       draft_model=DRAFT_MODEL, verbose=True, dtype="bfloat16",
+                       seed=0, temperature=0.0):
     import torch
     from transformers import AutoModel, AutoModelForCausalLM, AutoTokenizer
 
@@ -60,6 +93,14 @@ def measure_acceptance(prompts, max_new_tokens=512, num_steps=1, target_model=TA
     draft = AutoModel.from_pretrained(
         draft_model, trust_remote_code=True, dtype=torch_dtype
     ).cuda().eval()
+
+    # 與上游 examples/benchmark.py 一致：固定 seed 的 CUDA generator + 暖機
+    # （CUDA kernel、cached noise factor、time conditioning）
+    generator = torch.Generator(device="cuda").manual_seed(seed)
+    if prompts:
+        warm = build_inputs(tokenizer, prompts[0]["prompt"])["input_ids"].cuda()
+        draft.spec_generate(target, warm, max_new_tokens=32, num_steps=num_steps)
+        target.generate(warm, max_new_tokens=8, do_sample=False)
 
     records = []
     for i, item in enumerate(prompts):
@@ -76,14 +117,18 @@ def measure_acceptance(prompts, max_new_tokens=512, num_steps=1, target_model=TA
         #    也就是「不傳 attention_mask、顯式把 temperature 釘在 1.0（蓋掉 Qwen3
         #    generation_config 的 0.6）」。PASS 4 已驗證這兩處差異在數值上是惰性的
         #    （4 種簽章在 bf16 下輸出 token id 完全相同），但對齊上游仍是正確做法。
+        #    T>0 時上游改用 do_sample=True + top_p=1.0 + top_k=0，跟 spec_generate 的取樣一致。
+        if temperature > 0:
+            base_options = dict(do_sample=True, temperature=temperature, top_p=1.0, top_k=0)
+        else:
+            base_options = dict(do_sample=False, temperature=1.0)
         t0 = time.perf_counter()
         with torch.inference_mode():
             out = target.generate(
                 input_ids=input_ids,
                 max_new_tokens=max_new_tokens,
-                do_sample=False,
-                temperature=1.0,
                 pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
+                **base_options,
             )
         base_ids = out[0, input_ids.shape[1]:]
         base_text = tokenizer.decode(base_ids, skip_special_tokens=True)
@@ -95,17 +140,32 @@ def measure_acceptance(prompts, max_new_tokens=512, num_steps=1, target_model=TA
             res = draft.spec_generate(
                 target, input_ids,
                 max_new_tokens=max_new_tokens,
-                temperature=0.0,
+                temperature=temperature,
                 num_steps=num_steps,
+                generator=generator,
             )
         except TypeError:
-            # 部分版本需要同時傳 attention_mask
-            res = draft.spec_generate(
-                target, {"input_ids": input_ids, "attention_mask": attn},
-                max_new_tokens=max_new_tokens, temperature=0.0, num_steps=num_steps,
-            )
+            # 部分版本需要同時傳 attention_mask（且可能不支援 generator）
+            try:
+                res = draft.spec_generate(
+                    target, {"input_ids": input_ids, "attention_mask": attn},
+                    max_new_tokens=max_new_tokens, temperature=temperature, num_steps=num_steps,
+                    generator=generator,
+                )
+            except TypeError:
+                res = draft.spec_generate(
+                    target, {"input_ids": input_ids, "attention_mask": attn},
+                    max_new_tokens=max_new_tokens, temperature=temperature, num_steps=num_steps,
+                )
         spec_ids = res.sequences[0, input_ids.shape[1]:]
-        acc = float(getattr(res, "acceptance_length", float("nan")))
+        # 接受長度：上游用「每輪接受數」的陣列求平均（committed / rounds）
+        per_round = getattr(res, "acceptance_lengths", None)
+        if per_round:
+            acc = float(sum(per_round) / len(per_round))
+            rounds = len(per_round)
+        else:
+            acc = float(getattr(res, "acceptance_length", float("nan")))
+            rounds = 1
         spec_text = tokenizer.decode(spec_ids, skip_special_tokens=True)
         spec_time = time.perf_counter() - t0
 
@@ -130,6 +190,7 @@ def measure_acceptance(prompts, max_new_tokens=512, num_steps=1, target_model=TA
             "first_diff": first_diff,
             "spec_overshoot": max(0, int(spec_ids.shape[0]) - max_new_tokens),
             "acceptance_length": acc,
+            "rounds": rounds,
             "base_tokens": int(base_ids.shape[0]),
             "spec_tokens": int(spec_ids.shape[0]),
             "base_sec": round(base_time, 3),
@@ -177,20 +238,38 @@ def summarize(records):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--prompts", default=str(Path(__file__).with_name("prompts.json")))
+    ap.add_argument("--prompts", default=str(Path(__file__).with_name("prompts.json")),
+                    help="本地 prompt 集（JSON 陣列，每筆有 prompt/category）")
+    ap.add_argument("--dataset", default=None,
+                    help="上游 dataset：gsm8k / humaneval / mt-bench（論文與 DFlash 評估用的 80 筆格式）；"
+                         "指定後會覆蓋 --prompts")
+    ap.add_argument("--num-prompts", type=int, default=80,
+                    help="--dataset 取幾筆（上游預設 16，論文用 80）")
     ap.add_argument("--max-new-tokens", type=int, default=512)
     ap.add_argument("--num-steps", type=int, default=1, help="1 = 最快；2 = 接受長度較高但慢一點")
     ap.add_argument("--dtype", default="bfloat16", choices=sorted(DTYPES),
                     help="目標/草稿模型精度；嚴格無損性檢查請用 float32（見上游 benchmark.py 說明）")
+    ap.add_argument("--temperature", type=float, default=0.0,
+                    help="0 = greedy（可驗證無損性）；>0 = 採樣")
+    ap.add_argument("--seed", type=int, default=0, help="上游固定 seed 的 CUDA generator")
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
 
-    prompts = json.loads(Path(args.prompts).read_text(encoding="utf-8"))
-    print(f"[info] {len(prompts)} 個 prompt, num_steps={args.num_steps}, dtype={args.dtype}", flush=True)
+    if args.dataset:
+        prompts = load_dataset_prompts(args.dataset, args.num_prompts)
+        source = f"dataset={args.dataset} ({args.num_prompts} 筆，上游格式)"
+    else:
+        prompts = json.loads(Path(args.prompts).read_text(encoding="utf-8"))
+        source = args.prompts
+    print(f"[info] {len(prompts)} 個 prompt, num_steps={args.num_steps}, "
+          f"dtype={args.dtype}, T={args.temperature}, seed={args.seed} | {source}", flush=True)
     result = measure_acceptance(prompts, max_new_tokens=args.max_new_tokens,
-                                num_steps=args.num_steps, dtype=args.dtype)
+                                num_steps=args.num_steps, dtype=args.dtype,
+                                seed=args.seed, temperature=args.temperature)
 
     suffix = "" if args.dtype == "bfloat16" else f"_{args.dtype}"
+    if args.dataset:
+        suffix += f"_{args.dataset.replace('-', '')}"
     out = args.out or str(Path(__file__).with_name(f"results_acceptance_step{args.num_steps}{suffix}.json"))
     Path(out).write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"[done] 結果已寫入 {out}")

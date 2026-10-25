@@ -99,6 +99,20 @@ check("前 120 字相同只算那題", co["identical_head"] == 1, str(co))
 check("記錄第一個不同字元", co["rows"][1]["first_char_diff"] == 2, str(co["rows"][1]))
 check("token 差值", co["rows"][0]["token_delta"] == 0)
 
+print("[7] 上游對齊（acceptance.py 的 dataset 與參數）")
+check("上游 dataset 三個都在", set(A.DATASETS) == {"gsm8k", "humaneval", "mt-bench"}, str(sorted(A.DATASETS)))
+check("category 對應表正確",
+      A.CATEGORY_OF == {"gsm8k": "math", "humaneval": "code", "mt-bench": "chat"}, str(A.CATEGORY_OF))
+gsm_field = A.DATASETS["gsm8k"][3]
+text = gsm_field({"question": "2+2=?"})
+check("gsm8k prompt 格式與上游一致（boxed 指示）", text.startswith("2+2=?") and "\\boxed{}" in text, repr(text))
+he_field = A.DATASETS["humaneval"][3]
+htext = he_field({"prompt": "def f(): pass"})
+check("humaneval prompt 格式與上游一致（```python 區塊）",
+      htext.startswith("Write a solution to the following problem") and "```python" in htext, repr(htext[:60]))
+mt_field = A.DATASETS["mt-bench"][3]
+check("mt-bench 取第一輪 prompt", mt_field({"prompt": ["hi", "there"]}) == "hi")
+
 print()
 if FAILS:
     print(f"[RESULT] {len(FAILS)} 項未通過：{FAILS}")

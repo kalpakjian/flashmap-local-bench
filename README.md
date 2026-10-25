@@ -90,6 +90,8 @@ Phase 1 在 Windows 原生跑完（Qwen3-8B + FlashMap-Qwen3-8B，bf16，12 題�
 
 ---
 
+## 實驗設計要點
+
 - **Phase 1（`acceptance.py`）** 不起 server，直接用 flashmap 套件的 transformers 參考實作，
   量出 `acceptance_length`（γ），並把 FlashMap 輸出與 target greedy 輸出**逐字比對**驗證無損。
 - **Phase 2（`bench.py`）** 依序啟動兩個 vLLM server，**唯一差異是 `--speculative-config`**，
@@ -98,6 +100,45 @@ Phase 1 在 Windows 原生跑完（Qwen3-8B + FlashMap-Qwen3-8B，bf16，12 題�
 
 **預期量級**（RTX 4090 24 GB）：Qwen3-8B 逐字約 40–55 tok/s；
 若 FlashMap 達到論文比例（數學/程式 4–6×），應落在 150–250 tok/s，聊天約 100–150 tok/s。
+
+---
+
+## 與上游官方 repo 的對齊
+
+本 repo 的 lab 是**建立在官方實作之上的獨立量測工具**，不是上游的分支或修改版。
+
+| 項目 | 內容 |
+|---|---|
+| 上游 repo | [github.com/al-jshen/flashmap](https://github.com/al-jshen/flashmap)（MIT） |
+| 本 lab 對齊的 commit | **`cd5b45bd`**（2026-10-20，`master` HEAD；截至 2026-10-26 無更新） |
+| PyPI 套件 | `flashmap==0.1.0`（與上游 `pyproject.toml` 的 version 一致） |
+| 參考實作 | [`examples/benchmark.py`](https://github.com/al-jshen/flashmap/blob/master/examples/benchmark.py) |
+
+**已對齊上游 `examples/benchmark.py` 的部分**
+
+- prompt 格式與 dataset 選取（`gsm8k` / `humaneval` / `mt-bench`，論文與 DFlash 評估用的前 80 筆）
+- 基準呼叫簽章（不傳 `attention_mask`；greedy 時顯式 `temperature=1.0`）
+- 無損性判準（`torch.equal` 比 token id，不是比字串）
+- 接受長度算法（`acceptance_lengths` 逐輪數組求平均 = committed / rounds）
+- 固定 seed 的 CUDA generator + 暖機
+- bf16 近似並列說明與 `--dtype float32` 嚴格檢查模式
+
+```bash
+# 用上游的 dataset 格式重跑，可直接與論文 Table 1 對照
+python lab/acceptance.py --dataset gsm8k --num-prompts 80 --max-new-tokens 2048
+python lab/acceptance.py --dataset humaneval --num-prompts 80
+python lab/acceptance.py --dataset mt-bench --num-prompts 80
+```
+
+**lab 在上游之外多做的事**
+
+- 端到端 **vLLM 加速比**量測（上游只到 HF 參考實作層）
+- **Windows 原生**支援（上游只測 Linux；vLLM/SGLang 也只有 Linux wheel）
+- bf16 近似並列的**機制證明**（`pass3`～`pass6`，上游未做）
+- 伺服器端輸出比對與報告自動生成
+
+**驗證**：以上游的 GSM8K 格式在本機跑 8 題，平均 **γ = 7.25**；
+論文 Table 1 的 GSM8K γ = **7.69**（80 題、2048 tokens）——量測協定一致，結果吻合。
 
 ---
 

@@ -74,7 +74,7 @@ Log '3/4 安裝套件（torch / transformers / flashmap，不含 vLLM）'
 uv pip uninstall --python $VenvPy torch | Out-Null
 uv pip install --python $VenvPy torch --index-url $TorchIndex
 if ($LASTEXITCODE -ne 0) { Die "torch 安裝失敗（index: $TorchIndex）" }
-uv pip install --python $VenvPy 'transformers>=4.56' 'flashmap' 'huggingface_hub'
+uv pip install --python $VenvPy 'transformers>=4.56' 'flashmap' 'huggingface_hub' 'datasets'
 if ($LASTEXITCODE -ne 0) { Die 'transformers / flashmap 安裝失敗' }
 
 & $VenvPy (Join-Path $PSScriptRoot 'env_check.py')

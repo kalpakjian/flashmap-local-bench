@@ -76,7 +76,7 @@ uv venv --python 3.12 "$VENV"
 # shellcheck disable=SC1091
 source "$VENV/bin/activate"
 uv pip install --upgrade pip
-uv pip install "vllm==0.31.0" "flashmap[vllm]" "huggingface_hub"
+uv pip install "vllm==0.31.0" "flashmap[vllm]" "huggingface_hub" "datasets"
 
 log "   已安裝版本 + CUDA 檢查"
 python "$HERE/env_check.py"
