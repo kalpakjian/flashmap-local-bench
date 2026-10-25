@@ -460,14 +460,41 @@ Windows 原生可行的折衷是 llama.cpp 內建的 speculative decoding
    另外原生工具的進度輸出會寫到 stderr → `$ErrorActionPreference` 必須用 `'Continue'` 搭配明確檢查 `$LASTEXITCODE`，
    用 `'Stop'` 會讓腳本在第一個進度輸出就中止。
 
+### 7.7 本機實測結論：bf16 的「假性 MISMATCH」
+
+> 完整證據鏈見 repo 的 [`lab/FINDINGS.md`](https://github.com/kalpakjian/flashmap-local-bench/blob/main/lab/FINDINGS.md)，
+> 白話版見 [`lab/FINDINGS-easy.md`](https://github.com/kalpakjian/flashmap-local-bench/blob/main/lab/FINDINGS-easy.md)。
+
+Phase 1 在 bf16 下回報 8/12 不一致，一開始看起來像演算法有 bug。**實際結論：演算法沒有問題，是量測判準錯了。**
+
+| 問題 | 答案 |
+|---|---|
+| FlashMap 演算法有 bug 嗎 | **沒有**。PASS 3 的 instrumentation 自我檢查證明：FlashMap 送出的每一個 token 都等於它自己那一輪的 `argmax`（9/9 題通過，單題最多 479 token 全中） |
+| 為什麼 bf16 下不一致 | 分歧點的 top-2 logit gap 全部落在 bf16 的量化格點上（`0 / ±0.125 / ±0.25 / ±0.5`），4B 有 **6/9 筆 gap 恰為 0.0**（位元完全相同的並列）→ `argmax` 由索引順序決定，任何實作細節都可能翻轉 |
+| fp32 下呢 | 同一組程式、同一組 prompt、只改 dtype：**bf16 3/12 相同，fp32 12/12 相同**；γ 幾乎不變（6.00 vs 6.11）→ **加速效果與 dtype 無關，只有「逐位元相同」對 dtype 敏感** |
+| 「HF 基準 217 tokens vs vLLM 基準 155 tokens」是誰錯了 | **都不是錯**。分歧發生在 index 2，該處 bf16 gap 恰為 0.0，vLLM 與 FlashMap 各自 tie-break 到同一邊，HF 的 `generate()` 落到另一邊 → **bf16 下基準本身不唯一** |
+| 是 prompt / chat template 的問題嗎 | 不是。HF 與 vLLM 的 prompt token 完全一致；4 種 `attention_mask`/`temperature` 簽章在 bf16 下 12/12 輸出 token id 相同 |
+| 前向形狀會翻轉答案嗎 | 會——**但只在 bf16**。把前向形狀從 1 個位置改成 17 個位置，bf16 的 gap 會翻轉（id 10/11 符號相反）；fp32 三種形狀的差異只有 7.6e−06~5.7e−05，**零次翻轉** |
+
+**這對「無損性」這個詞的意義**：論文保證的是**演算法層無損**（輸出分布與 target 相同，greedy 下每個 token 都是 argmax），
+**不是**「兩種不同形狀的前向在 bf16 下捨入到同一個值」。上游 `examples/benchmark.py` 自己也印了這段警語並建議
+用 `--dtype float32` 做 exact check——而我原本的 `acceptance.py` 把它當成演算法無損來判定。
+
+**VRAM 的硬限制**：8B 的 fp32 權重是 32 GiB，**超過 RTX 4090 的 24 GiB**，所以完整的 dtype A/B 只能在 **4B** 對照組做；
+8B 改以 `pass5_fp32_cpu_truth.py` 在 CPU 上取單點真值（32 GiB RAM 放得下）。
+
+**要修正的既有認知**：§2.1 我寫的「greedy 下規則退化成保留與 target argmax 最長相符的前綴」在**演算法層**正確，
+但實作層還多了一層 bf16 解析度的干擾；§7.2 的 VRAM 試算（17.4 GB）則沒有考慮 fp32 嚴格檢查需要 2 倍權重。
+
 
 
 ---
 
-## 八、速記卡（10 條）
+## 八、速記卡（11 條）
 
 1. FlashMap = **flow map 版 drafter**：一次前傳產出整塊 K=16 token，保留 token 間相依性。
-2. 「無損」的來源是**推測解碼的接受規則**，不是 FlashMap 本身；greedy 下輸出逐字一致。
+2. 「無損」的來源是**推測解碼的接受規則**，不是 FlashMap 本身；greedy 下**演算法層**每個 token 都是 target 的 argmax。
+   （實作層要「逐位元相同」必須用 fp32，bf16 的近似並列會造成假性 mismatch → §7.7）
 3. **DFlash 的病根是 factorization error**：只剩 per-slot 邊際，差距是 total correlation，容量救不了。
 4. **FlashMap 的病根是 flow map 的 1 NFE 蒸餾不夠好**：只保留 teacher 約 39% 的 joint structure。
 5. **joint structure 是「積分」產生的**，teacher flow 在 1 NFE 時 Δ=0.00。
@@ -476,6 +503,7 @@ Windows 原生可行的折衷是 llama.cpp 內建的 speculative decoding
 8. **在 Qwen3-4B 上 FlashMap 沒有全面贏**（平均 3.78× vs DFlash 3.81×）——摘要只講 8B。
 9. **量測條件**：H200 NVL、concurrency 1、SGLang 0.5.20、thinking off；批次服務未評估。
 10. 目前只有 **Qwen3-4B / 8B** 的 drafter；權重 Apache-2.0、程式碼 MIT、論文 CC BY 4.0。
+11. **Windows 只能跑 Phase 1**（接受長度＋無損性），端到端 tok/s 需要 vLLM → 只有 Linux wheel → 走 WSL2 或 Omarchy。
 
 ---
 

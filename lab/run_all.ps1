@@ -10,7 +10,10 @@
 param(
     [int]$MaxTokens = 512,
     [switch]$SkipPhase1,
-    [switch]$SkipPhase2
+    [switch]$SkipPhase2,
+    # 嚴格「無損性」檢查：改用 Qwen3-4B + float32。
+    # 8B 的 fp32 權重是 32 GiB，超過 24 GiB 的 RTX 4090，放不下。
+    [switch]$Strict
 )
 $ErrorActionPreference = 'Continue'   # 見 setup.ps1 說明：原生工具的 stderr 進度輸出不可視為錯誤
 
@@ -26,11 +29,24 @@ if (-not $env:HF_HOME) { $env:HF_HOME = Join-Path $WorkDir 'hf-cache' }
 
 # ---------------------------------------------------------------- Phase 1
 if (-not $SkipPhase1) {
-    Log 'Phase 1 - 接受長度 γ + 無損性驗證'
-    & $Py acceptance.py --prompts prompts.json --max-new-tokens $MaxTokens --num-steps 1
+    Log 'Phase 1a - 接受長度 γ（bf16）'
+    & $Py acceptance.py --prompts prompts.json --max-new-tokens $MaxTokens --num-steps 1 --dtype bfloat16
     if ($LASTEXITCODE -ne 0) {
-        Write-Host '[warn] Phase 1 有項目未通過（退出碼非 0），請看上面的 lossless 標記' -ForegroundColor Yellow
+        Write-Host @'
+[note] bf16 下出現 MISMATCH 是「預期中的數值假象」，不是演算法錯誤。
+       推測解碼在 temperature=0 下是無損的（每個 token 都等於 target 的 argmax）；
+       但 bf16 只有 8 個 mantissa bit，top-2 logit 差 < 1 個 ULP 時兩者會「精確並列」，
+       不同 kernel 的 tie-break 方向可能相反，於是整段文字分岔。
+       嚴格比對請用 --dtype float32（見下方 Phase 1b 或 FINDINGS.md）。
+'@ -ForegroundColor Yellow
     }
+}
+
+if ($Strict) {
+    Log 'Phase 1b - 嚴格無損性檢查（Qwen3-4B + float32，預期 12/12 逐 token 相同）'
+    $env:TARGET_MODEL = 'Qwen/Qwen3-4B'
+    $env:DRAFT_MODEL  = 'j-shen/FlashMap-Qwen3-4B'
+    & $Py acceptance.py --prompts prompts.json --max-new-tokens $MaxTokens --num-steps 1 --dtype float32
 }
 
 # ---------------------------------------------------------------- Phase 2

@@ -50,7 +50,9 @@ powershell -ExecutionPolicy Bypass -File run_all.ps1    # 跑 Phase 1
 | 路徑 | 內容 |
 |---|---|
 | [`notes/flashmap-paper-notes.md`](notes/flashmap-paper-notes.md) | 完整筆記：背景公式、FlashMap 三個關鍵設計、與 DFlash/EAGLE-3 比較、全部數據表、限制與本機部署評估 |
-| [`lab/`](lab/) | 實驗腳本（Linux + Windows 兩套）：`setup.sh`/`setup.ps1`、`run_all.sh`/`run_all.ps1`、`acceptance.py`、`bench.py`、`env_check.py`、`selftest.py`、`prompts.json` |
+| [`lab/`](lab/) | 實驗腳本（Linux + Windows 兩套）：`setup.sh`/`setup.ps1`、`run_all.sh`/`run_all.ps1`、`acceptance.py`、`bench.py`、`env_check.py`、`download_models.py`、`selftest.py`、`prompts.json` |
+| [`lab/FINDINGS-easy.md`](lab/FINDINGS-easy.md) | **實驗結論白話版**：bf16 的近似並列如何造成「假性 MISMATCH」 |
+| [`lab/FINDINGS.md`](lab/FINDINGS.md) | 上述結論的完整證據鏈（PASS 1–6，可重跑） |
 | [`paper/flashmap_paper.txt`](paper/flashmap_paper.txt) | arXiv 論文全文（剝除 HTML 後的純文字版，CC BY 4.0） |
 
 ---
@@ -64,6 +66,7 @@ powershell -ExecutionPolicy Bypass -File run_all.ps1    # 跑 Phase 1
 | 3 | **joint structure 是「積分」製造的，不是模型自帶的**：teacher flow 在 1 NFE 時 Δ=0.00，積分 16 步後 Δ=0.82；FlashMap 1 NFE 只保留約 39% | §6.2 shuffle test |
 | 4 | **在 Qwen3-4B 上 FlashMap 沒有全面勝出**（平均 3.78× vs DFlash 3.81×）。摘要的「比 DFlash 快」只對 Qwen3-8B 成立 | Appendix C, Table 3 |
 | 5 | **量測條件是 H200 NVL、concurrency=1、thinking off**；批次服務作者明確列為未評估 | §4、Limitations |
+| 6 | **本機實測：bf16 下的「無損性不符」是數值假象，不是演算法錯誤**。FlashMap 每個 token 都等於 target 的 argmax（9/9 題、單題最多 479 token 全中）；同一組程式在 float32 下 12/12 逐 token 完全相同 | [`lab/FINDINGS.md`](lab/FINDINGS.md) |
 
 ---
 

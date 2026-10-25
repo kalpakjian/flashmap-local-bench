@@ -13,6 +13,9 @@
 # =============================================================================
 param(
     [switch]$SkipModels,
+    # 一併下載 Qwen3-4B + FlashMap-Qwen3-4B，供「嚴格無損性檢查」(float32) 使用。
+    # 8B 的 fp32 權重是 32 GiB，超過 24 GiB 的 RTX 4090，放不下 → 只能用 4B 做 dtype A/B。
+    [switch]$With4B,
     # Windows 上 PyPI 的 torch 是 CPU-only，CUDA 版需從 PyTorch 自己的 index 裝。
     # cu130 需要驅動 >= 580；驅動較舊可改成 cu128。
     [string]$TorchIndex = 'https://download.pytorch.org/whl/cu130'
@@ -79,15 +82,12 @@ if ($LASTEXITCODE -ne 0) { Die '環境檢查失敗（詳見上方訊息）' }
 
 # ------------------------------------------------------------------ 4. 模型
 if ($SkipModels) {
-    Warn '依參數略過模型下載'
+    Warn '依參略過模型下載'
 } else {
     Log '4/4 下載模型（首次約 17.5 GB）'
-    & $VenvPy -c @"
-from huggingface_hub import snapshot_download
-for repo in ['$TargetModel', '$DraftModel']:
-    print('  ->', repo, flush=True)
-    print('     ', snapshot_download(repo))
-"@
+    $dlArgs = @((Join-Path $PSScriptRoot 'download_models.py'))
+    if ($With4B) { $dlArgs += '--with-4b' }
+    & $VenvPy @dlArgs
     if ($LASTEXITCODE -ne 0) { Die '模型下載失敗' }
 }
 

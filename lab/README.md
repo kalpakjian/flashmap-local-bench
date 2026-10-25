@@ -59,10 +59,77 @@ cd ~/flashmap-local-bench/lab
 
 ---
 
+## 1b. Windows 原生（只跑 Phase 1）
+
+> **先讀這裡**：[`FINDINGS-easy.md`](FINDINGS-easy.md)（白話版結論）——
+> Phase 1 在 bf16 下出現 MISMATCH **是預期的數值假象，不是演算法錯誤**；
+> 嚴格比對請用 `--dtype float32`。完整證據鏈見 [`FINDINGS.md`](FINDINGS.md)。
+
+**結論：可以，但只有一半。**
+
+| 階段 | 內容 | Windows 原生 |
+|---|---|---|
+| Phase 1 | 接受長度 γ + 無損性驗證（`acceptance.py`） | ✅ **可以** |
+| Phase 2 | 端到端 tok/s（`bench.py`，需要 vLLM） | ❌ **不行**，必須 Linux |
+
+原因（2026-10-26 由 PyPI API 查證）：
+
+- `vllm 0.31.0` 與 `sglang 0.5.20` 在 PyPI **只有 manylinux wheel，沒有 `win_amd64`** → 端到端量測無法在 Windows 原生跑。
+- `flashmap` 套件的核心 `modeling_flashmap.py` 是**純 PyTorch**（無 triton / torch.compile / flash-attn，
+  這些只出現在 `flashmap/vllm/`、`flashmap/sglang/` 兩個外掛子套件），`flashmap/__init__.py` 也不會
+  在匯入時拉進外掛 → **Phase 1 完全跨平台**。
+- `torch` 有 `win_amd64` wheel → 底層沒問題。
+
+### 執行
+
+```powershell
+cd lab
+powershell -ExecutionPolicy Bypass -File setup.ps1 -With4B   # 建環境 + 下載模型（+4B 供 fp32 嚴格檢查）
+powershell -ExecutionPolicy Bypass -File run_all.ps1          # Phase 1a（bf16）
+powershell -ExecutionPolicy Bypass -File run_all.ps1 -Strict  # Phase 1b（4B + float32 嚴格無損性檢查）
+```
+
+或直接：
+
+```powershell
+& $HOME\flashmap-lab\.venv\Scripts\python.exe acceptance.py --prompts prompts.json --max-new-tokens 512 --dtype bfloat16
+```
+
+> **dtype 與 VRAM 的取捨**：8B 的 fp32 權重是 32 GiB，超過 RTX 4090 的 24 GiB，
+> 所以嚴格的 fp32 無損性檢查只能用 **4B** 對照組做；8B 改用 `pass5_fp32_cpu_truth.py`
+> 在 CPU 上取單點真值。
+
+### Windows 專屬的三個坑（腳本已處理）
+
+1. **PyPI 的 `torch` 在 Windows 上是 CPU-only 版**（會顯示 `2.14.1+cpu`）。
+   CUDA 版在 PyTorch 自己的 index，`setup.ps1` 會用
+   `--index-url https://download.pytorch.org/whl/cu130` 重新安裝
+   （並先 `uv pip uninstall torch`，否則 uv 會認為需求已滿足而沿用舊版）。
+   驅動較舊可改用 `-TorchIndex https://download.pytorch.org/whl/cu128`。
+2. **PowerShell 5.1 讀無 BOM 的 UTF-8 `.ps1` 會把中文解碼錯亂** → 語法錯誤（"字串缺少終止符"）。
+   所有 `.ps1` 一律存成 **UTF-8 with BOM**。
+3. **PowerShell 5.1 把字串傳給原生程式時會吃掉內嵌雙引號** → `python -c "... getattr(m, "__version__", ...) ..."`
+   會變成 `NameError: name '__version__' is not defined`。解法：python 片段寫成獨立檔案
+   （`env_check.py`、`download_models.py`）。另外原生工具的進度輸出會寫到 stderr →
+   `$ErrorActionPreference` 必須用 `'Continue'` 搭配明確檢查 `$LASTEXITCODE`，用 `'Stop'` 會讓腳本在
+   第一個進度輸出就中止。
+
+### Phase 2 的兩個 Windows 選項
+
+| 選項 | 作法 | 備註 |
+|---|---|---|
+| A. WSL2 | `powershell -ExecutionPolicy Bypass -File setup_wsl2.ps1` | 需 `wsl --install -d Ubuntu-24.04`（要重開機一次）。GPU passthrough 可用，但**建議把 repo 與模型快取放在 WSL 的 ext4**（`/mnt/c` 讀寫慢） |
+| B. 重開機進 Omarchy | `bash setup.sh && bash run_all.sh` | 效能最好，無跨檔案系統開銷 |
+
+> 兩種作法共用同一份 GPU。跑實驗前請先關閉 Windows 上的遊戲／其他推論程式，
+> 否則 24 GB VRAM 不夠（Qwen3-8B 16.4 GB + drafter 1.0 GB + KV cache）。
+
+---
+
 ## 2. 三步執行
 
 ```bash
-cd ~/omarchy-flashmap
+cd ~/flashmap-local-bench/lab
 
 # ① 建環境（冪等；會下載 ~17.5GB 模型，約 10–30 分鐘）
 bash setup.sh
@@ -132,11 +199,17 @@ bash run_all.sh
 |---|---|
 | `setup.sh` | 冪等環境建置：檢查 → 裝 uv → py3.12 venv → 裝 vllm/flashmap → CUDA smoke → 下載模型 |
 | `run_all.sh` | 一鍵跑完 Phase 1 + Phase 2 並列出產出 |
+| `setup.ps1` | 同上，Windows 版（只裝 Phase 1 需要的套件，不含 vLLM；`-With4B` 可加抓 4B 模型） |
+| `run_all.ps1` | Windows 版執行器：跑 Phase 1，偵測不到 vLLM 時跳過 Phase 2 並說明替代方案（`-Strict` 跑 4B fp32 嚴格檢查） |
+| `setup_wsl2.ps1` | WSL2 環境檢查／安裝指引（Phase 2 的 Windows 路線） |
 | `acceptance.py` | Part 1：接受長度 γ + 無損性（transformers 參考實作，不需要 server） |
 | `bench.py` | Part 2：端到端 tok/s（vLLM，基準 vs FlashMap）＋報告產生＋伺服器端輸出比對 |
 | `pass3_bf16_proof.py` | 機制驗證：每個分歧點在共享前綴上的 fp32 真值 vs bf16 解析度 |
 | `pass4_bf16_shape.py` | 機制驗證：基準呼叫簽章（2×2）＋前向形狀（batch 1 vs 17）對 bf16 argmax 的影響 |
 | `pass5_fp32_cpu_truth.py` | 機制驗證：8B 的 fp32 真值（CPU 上做，繞過 24 GB 限制） |
+| `pass6_block_shape.py` | 機制驗證：17-position 區塊驗證 vs 1-position 逐字解碼，證明「形狀翻轉」只在 bf16 發生 |
+| `env_check.py` | 版本與 CUDA 檢查（獨立檔案，避免 PowerShell 傳參數吃掉引號） |
+| `download_models.py` | 模型下載（支援 `--with-4b`） |
 | `selftest.py` | 不需 GPU 的邏輯自測，重開機後可先跑 |
 | `prompts.json` | 12 題固定測試集（數學 5 / 程式 4 / 聊天 3） |
 | `FINDINGS.md` | 驗證結論：Phase 1 的 `all_lossless=false` 是 bf16 數值假象的完整證據鏈 |
