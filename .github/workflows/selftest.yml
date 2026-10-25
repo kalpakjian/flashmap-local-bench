@@ -1,0 +1,38 @@
+name: selftest
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  selftest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Bash 語法檢查
+        run: |
+          for f in lab/*.sh; do
+            echo "checking $f"
+            bash -n "$f"
+          done
+
+      - name: 確認腳本為 LF 換行
+        run: |
+          if grep -rlU $'\r' lab/ ; then
+            echo "::error::偵測到 CRLF 換行，Linux 上會破壞 shell 腳本"
+            exit 1
+          fi
+          echo "全部為 LF"
+
+      - name: 執行 selftest（純邏輯，不需 GPU）
+        working-directory: lab
+        run: python selftest.py
+
+      - name: 檢查 prompts.json
+        run: python -c "import json;d=json.load(open('lab/prompts.json',encoding='utf-8'));assert len(d)==12;print('12 prompts ok')"
