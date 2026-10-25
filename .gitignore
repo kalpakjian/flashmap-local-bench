@@ -2,6 +2,8 @@
 results_*.json
 report.md
 vllm_*.log
+setup_win.log
+setup_win.err
 
 # Python
 __pycache__/

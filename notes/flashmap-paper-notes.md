@@ -432,6 +432,34 @@ Windows 原生可行的折衷是 llama.cpp 內建的 speculative decoding
 量測條件刻意對齊論文：**concurrency=1、temperature=0（greedy）、thinking off**，
 兩個 server 除 `--speculative-config` 外參數完全相同，避免不公平比較。
 
+### 7.6 Windows 原生可行性（2026-10-26 實測查證）
+
+| 階段 | Windows 原生 | 證據 |
+|---|---|---|
+| Phase 1：接受長度 γ + 無損性 | ✅ **可以** | 已在本機實跑 `setup.ps1`：torch 2.14.1+cu130、CUDA runtime 13.0、RTX 4090 sm_89、bf16 matmul 通過 |
+| Phase 2：端到端 tok/s | ❌ **不行** | vLLM 0.31.0 / SGLang 0.5.20 在 PyPI **只有 manylinux wheel，無 `win_amd64`**（PyPI API 逐一列出檔名確認） |
+
+**為什麼 Phase 1 可以**：`flashmap` wheel 拆成兩塊——
+
+- `flashmap/modeling_flashmap.py`（核心參考實作）：只 import `math / warnings / contextlib / dataclasses / typing / torch / torch.nn.functional`，
+  **無 triton、無 torch.compile、無 flash-attn** → 純 PyTorch，跨平台。
+- `flashmap/vllm/*`、`flashmap/sglang/*`（server 外掛）：含 triton kernel 與 `torch.compile` → Linux only。
+
+而 `flashmap/__init__.py` 只註冊 `AutoConfig`/`AutoModel`，**不會在匯入時拉進外掛** → Windows 上 `import flashmap` 安全。
+
+**Windows 專屬的三個坑（已寫進 `lab/setup.ps1`）**：
+
+1. **PyPI 的 `torch` 在 Windows 上是 CPU-only 版**（實測裝到 `2.14.1+cpu`，`cuda.is_available()` 為 False）。
+   CUDA 版在 PyTorch 自己的 index：`--index-url https://download.pytorch.org/whl/cu130`（`2.14.1+cu130-cp312-win_amd64`）。
+   必須**先 `uv pip uninstall torch`** 再裝，否則 uv 認為需求已滿足而沿用 CPU 版。
+   Linux 相反：PyPI 的 torch 預設就是 CUDA build，不要加 `--index-url cpu`。
+2. **PowerShell 5.1 讀無 BOM 的 UTF-8 `.ps1` 會解碼錯亂** → 中文內容導致語法錯誤（"字串缺少終止符"）。
+   所有 `.ps1` 必須存成 **UTF-8 with BOM**。
+3. **PowerShell 5.1 把字串傳給原生程式時會吃掉內嵌雙引號** → `python -c "... getattr(m, "__version__", ...) ..."` 會變成
+   `NameError: name '__version__' is not defined`。解法：python 片段寫成獨立檔案（`lab/env_check.py`）再呼叫。
+   另外原生工具的進度輸出會寫到 stderr → `$ErrorActionPreference` 必須用 `'Continue'` 搭配明確檢查 `$LASTEXITCODE`，
+   用 `'Stop'` 會讓腳本在第一個進度輸出就中止。
+
 
 
 ---

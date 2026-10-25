@@ -17,6 +17,8 @@ FlashMap 是一個**推測解碼（speculative decoding）的 drafter**：用連
 
 ## 快速開始
 
+### Linux（完整流程）
+
 ```bash
 git clone https://github.com/kalpakjian/flashmap-local-bench.git
 cd flashmap-local-bench/lab
@@ -24,6 +26,20 @@ cd flashmap-local-bench/lab
 bash setup.sh      # 建環境 + 下載模型（Qwen3-8B + FlashMap drafter，約 17.5 GB）
 bash run_all.sh    # Phase 1: γ + 無損性；Phase 2: 端到端 tok/s
 ```
+
+### Windows 原生（只跑 Phase 1）
+
+```powershell
+git clone https://github.com/kalpakjian/flashmap-local-bench.git
+cd flashmap-local-bench\lab
+
+powershell -ExecutionPolicy Bypass -File setup.ps1     # 建環境 + 下載模型
+powershell -ExecutionPolicy Bypass -File run_all.ps1    # 跑 Phase 1
+```
+
+> **Windows 只能跑一半**：接受長度與無損性（Phase 1）可以原生執行；
+> 端到端 tok/s（Phase 2）需要 vLLM，而 vLLM / SGLang 在 PyPI **只有 manylinux wheel**，
+> 必須走 Linux（WSL2 或 Omarchy）。詳見 [`lab/README.md`](lab/README.md) §1b。
 
 詳細說明、錯誤處理、量測設計理由見 **[`lab/README.md`](lab/README.md)**。
 
@@ -34,7 +50,7 @@ bash run_all.sh    # Phase 1: γ + 無損性；Phase 2: 端到端 tok/s
 | 路徑 | 內容 |
 |---|---|
 | [`notes/flashmap-paper-notes.md`](notes/flashmap-paper-notes.md) | 完整筆記：背景公式、FlashMap 三個關鍵設計、與 DFlash/EAGLE-3 比較、全部數據表、限制與本機部署評估 |
-| [`lab/`](lab/) | 實驗腳本：`setup.sh` / `run_all.sh` / `acceptance.py` / `bench.py` / `selftest.py` / `prompts.json` |
+| [`lab/`](lab/) | 實驗腳本（Linux + Windows 兩套）：`setup.sh`/`setup.ps1`、`run_all.sh`/`run_all.ps1`、`acceptance.py`、`bench.py`、`env_check.py`、`selftest.py`、`prompts.json` |
 | [`paper/flashmap_paper.txt`](paper/flashmap_paper.txt) | arXiv 論文全文（剝除 HTML 後的純文字版，CC BY 4.0） |
 
 ---

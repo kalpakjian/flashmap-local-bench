@@ -8,6 +8,7 @@
 # =============================================================================
 set -euo pipefail
 
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKDIR="${WORKDIR:-$HOME/flashmap-lab}"
 VENV="$WORKDIR/.venv"
 TARGET_MODEL="${TARGET_MODEL:-Qwen/Qwen3-8B}"
@@ -77,30 +78,9 @@ source "$VENV/bin/activate"
 uv pip install --upgrade pip
 uv pip install "vllm==0.31.0" "flashmap[vllm]" "huggingface_hub"
 
-log "   已安裝版本"
-python - <<'PY'
-import torch, vllm, transformers, flashmap
-print(f"   torch        {torch.__version__}")
-print(f"   vllm         {vllm.__version__}")
-print(f"   transformers {transformers.__version__}")
-print(f"   flashmap     {getattr(flashmap, '__version__', 'n/a')}")
-print(f"   cuda avail   {torch.cuda.is_available()}")
-if torch.cuda.is_available():
-    p = torch.cuda.get_device_properties(0)
-    print(f"   gpu          {p.name}  {p.total_memory/1024**3:.1f} GB  sm_{p.major}{p.minor}")
-PY
-
-# ---------------------------------------------------------------- 4. CUDA smoke
-log "4/6 CUDA smoke test"
-python - <<'PY'
-import torch, sys
-if not torch.cuda.is_available():
-    sys.exit("  [fail] torch 看不到 GPU")
-a = torch.randn(2048, 2048, device="cuda", dtype=torch.bfloat16)
-b = a @ a
-torch.cuda.synchronize()
-print(f"  [ok] bf16 matmul on {torch.cuda.get_device_name(0)} -> {tuple(b.shape)}")
-PY
+log "   已安裝版本 + CUDA 檢查"
+python "$HERE/env_check.py"
+[ $? -ne 0 ] && die "環境檢查失敗（詳見上方訊息；Linux 上 torch 應為預設 CUDA build）"
 
 # ---------------------------------------------------------------- 5. 下載模型
 log "5/6 下載模型（首次約 17.5 GB）"
