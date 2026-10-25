@@ -23,9 +23,13 @@ FlashMap 是一個**推測解碼（speculative decoding）的 drafter**：用連
 git clone https://github.com/kalpakjian/flashmap-local-bench.git
 cd flashmap-local-bench/lab
 
-bash setup.sh      # 建環境 + 下載模型（Qwen3-8B + FlashMap drafter，約 17.5 GB）
+bash prepare_models.sh --from-windows   # 從 Windows 分割區搬模型（省 16 GB 下載）
+source ~/flashmap-lab/models/env.sh
+bash setup.sh      # 建環境 + 安裝 vllm/flashmap
 bash run_all.sh    # Phase 1: γ + 無損性；Phase 2: 端到端 tok/s
 ```
+
+> 只有 Linux 能跑 **Phase 2（端到端 tok/s）**，因為 vLLM / SGLang 在 PyPI 只有 manylinux wheel。
 
 ### Windows 原生（只跑 Phase 1）
 

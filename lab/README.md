@@ -131,12 +131,22 @@ powershell -ExecutionPolicy Bypass -File run_all.ps1 -Strict  # Phase 1b（4B + 
 ```bash
 cd ~/flashmap-local-bench/lab
 
-# ① 建環境（冪等；會下載 ~17.5GB 模型，約 10–30 分鐘）
+# ① 準備模型：從 Windows 分割區搬（省 16GB 下載），或直接下載
+bash prepare_models.sh --from-windows     # 自動偵測 /mnt/c/Users/*/flashmap-lab/hf-cache
+bash prepare_models.sh --download         # 或由 Hugging Face 下載
+source ~/flashmap-lab/models/env.sh       # 設定 TARGET_MODEL / DRAFT_MODEL
+
+# ② 建環境（冪等；會下載 ~17.5GB 模型，約 10–30 分鐘）
 bash setup.sh
 
-# ② 跑實驗（Phase 1 接受長度+無損性，Phase 2 端到端 tok/s）
+# ③ 跑實驗（Phase 1 接受長度+無損性，Phase 2 端到端 tok/s）
 bash run_all.sh
 ```
+
+> **為什麼有 `prepare_models.sh`**：Windows 缺 symlink 權限，HF 快取裡的權重是
+> `hf-cache/hub/<repo>/snapshots/<sha>/` 的**實體副本**、`blobs/` 是空的——
+> 不能直接當 HF 快取搬到 Linux 給 huggingface_hub 辨識，但那個 snapshot 目錄
+> 本身就是完整可用的模型目錄，直接複製過去即可（實測兩個目錄共 16.2 GB、檔案齊全）。
 
 `setup.sh` 做什麼：
 
@@ -198,6 +208,7 @@ bash run_all.sh
 | 檔案 | 用途 |
 |---|---|
 | `setup.sh` | 冪等環境建置：檢查 → 裝 uv → py3.12 venv → 裝 vllm/flashmap → CUDA smoke → 下載模型 |
+| `prepare_models.sh` | 準備本機模型目錄：從 Windows 分割區的 HF 快取搬（省 16 GB 下載）或直接下載，並產生 `env.sh` |
 | `run_all.sh` | 一鍵跑完 Phase 1 + Phase 2 並列出產出 |
 | `setup.ps1` | 同上，Windows 版（只裝 Phase 1 需要的套件，不含 vLLM；`-With4B` 可加抓 4B 模型） |
 | `run_all.ps1` | Windows 版執行器：跑 Phase 1，偵測不到 vLLM 時跳過 Phase 2 並說明替代方案（`-Strict` 跑 4B fp32 嚴格檢查） |
