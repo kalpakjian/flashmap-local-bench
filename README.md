@@ -70,7 +70,25 @@ powershell -ExecutionPolicy Bypass -File run_all.ps1    # 跑 Phase 1
 
 ---
 
-## 實驗設計要點
+## 本機實測（Windows / RTX 4090 24 GB，2026-10-26）
+
+Phase 1 在 Windows 原生跑完（Qwen3-8B + FlashMap-Qwen3-8B，bf16，12 題，num_steps=1）：
+
+| 類別 | 本機平均 γ | 論文 γ（T=0, 1 step） | 本機 HF 層加速 | 論文加速（H200 NVL, SGLang） |
+|---|---|---|---|---|
+| 數學（5 題） | **6.73** | 6.00 – 7.69 | 3.27× | 4.89 – 6.14× |
+| 程式（4 題） | **6.51** | 4.95 – 6.65 | 3.50× | 4.02 – 5.26× |
+| 聊天（3 題） | **2.77** | 3.14 – 3.71 | 1.61× | 2.56 – 3.04× |
+| 全部（12 題） | **5.67** | — | — | — |
+
+- **接受長度與論文吻合**（數學／程式落在論文區間內）。
+- 本機加速倍數低於論文：HF 參考實作**每輪都有 Python 層開銷**（無 CUDA graph、無 vLLM 的排程器），
+  端到端數字必須用 vLLM 才有可比性（Phase 2，需要 Linux）。
+- `token_exact` 為 **7/12**：不一致的 5 題是 **bf16 近似並列**造成的假象，不是演算法問題
+  → 見 [`lab/FINDINGS.md`](lab/FINDINGS.md)。
+- 環境：torch 2.14.1+cu130 / CUDA runtime 13.0 / RTX 4090 sm_89 / Python 3.12 (uv venv)。
+
+---
 
 - **Phase 1（`acceptance.py`）** 不起 server，直接用 flashmap 套件的 transformers 參考實作，
   量出 `acceptance_length`（γ），並把 FlashMap 輸出與 target greedy 輸出**逐字比對**驗證無損。

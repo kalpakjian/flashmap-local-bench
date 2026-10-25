@@ -4,6 +4,8 @@ report.md
 vllm_*.log
 setup_win.log
 setup_win.err
+phase1_win.log
+phase1_win.err
 
 # Python
 __pycache__/
