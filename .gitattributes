@@ -1,0 +1,8 @@
+# 統一以 LF 儲存與取出（Linux 為主要執行環境；Windows 上也避免 CRLF 破壞 shell 腳本）
+* text=auto eol=lf
+
+*.sh  text eol=lf
+*.py  text eol=lf
+*.json text eol=lf
+*.md  text eol=lf
+*.txt text eol=lf

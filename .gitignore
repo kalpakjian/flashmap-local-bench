@@ -1,0 +1,20 @@
+# 實驗輸出（由 lab/ 的腳本產生）
+results_*.json
+report.md
+vllm_*.log
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 模型快取
+hf-cache/
+.cache/
+
+# 編輯器 / 系統
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

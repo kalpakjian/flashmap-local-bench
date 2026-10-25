@@ -1,0 +1,161 @@
+#!/usr/bin/env python3
+"""
+FlashMap 實驗 Part 1：接受長度 (acceptance length γ) + 無損性驗證
+
+用 flashmap 套件的 transformers 參考實作（不需要啟 server），對每個 prompt 做兩件事：
+  A. target 逐字 greedy 生成，作為基準輸出
+  B. FlashMap spec_generate (temperature=0) 生成，比對字串是否完全相同 → 驗證「無損」
+     並讀取 output.acceptance_length → 接受長度 γ
+
+用法：python acceptance.py --prompts prompts.json --max-new-tokens 512
+"""
+import argparse
+import json
+import os
+import statistics
+import sys
+import time
+from pathlib import Path
+
+TARGET_MODEL = os.environ.get("TARGET_MODEL", "Qwen/Qwen3-8B")
+DRAFT_MODEL = os.environ.get("DRAFT_MODEL", "j-shen/FlashMap-Qwen3-8B")
+
+
+def build_inputs(tokenizer, prompt, enable_thinking=False):
+    """套用 Qwen3 chat template；enable_thinking=False 對齊論文的 thinking off 設定。"""
+    return tokenizer.apply_chat_template(
+        [{"role": "user", "content": prompt}],
+        add_generation_tokens=False,
+        add_generation_prompt=True,
+        enable_thinking=enable_thinking,
+        return_tensors="pt",
+        return_dict=True,
+    )
+
+
+def measure_acceptance(prompts, max_new_tokens=512, num_steps=1, target_model=TARGET_MODEL,
+                       draft_model=DRAFT_MODEL, verbose=True):
+    import torch
+    from transformers import AutoModel, AutoModelForCausalLM, AutoTokenizer
+
+    print(f"[load] target={target_model}", flush=True)
+    tokenizer = AutoTokenizer.from_pretrained(target_model)
+    target = AutoModelForCausalLM.from_pretrained(
+        target_model, dtype=torch.bfloat16
+    ).cuda().eval()
+
+    print(f"[load] drafter={draft_model}", flush=True)
+    draft = AutoModel.from_pretrained(
+        draft_model, trust_remote_code=True, dtype=torch.bfloat16
+    ).cuda().eval()
+
+    records = []
+    for i, item in enumerate(prompts):
+        prompt, category = item["prompt"], item.get("category", "misc")
+        enc = build_inputs(tokenizer, prompt)
+        input_ids = enc["input_ids"].cuda()
+        attn = enc.get("attention_mask")
+        if attn is not None:
+            attn = attn.cuda()
+
+        # A. target 逐字 greedy 基準
+        t0 = time.perf_counter()
+        with torch.inference_mode():
+            out = target.generate(
+                input_ids=input_ids,
+                attention_mask=attn,
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+                pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
+            )
+        base_ids = out[0, input_ids.shape[1]:]
+        base_text = tokenizer.decode(base_ids, skip_special_tokens=True)
+        base_time = time.perf_counter() - t0
+
+        # B. FlashMap greedy（無損）+ 接受長度
+        t0 = time.perf_counter()
+        try:
+            res = draft.spec_generate(
+                target, input_ids,
+                max_new_tokens=max_new_tokens,
+                temperature=0.0,
+                num_steps=num_steps,
+            )
+        except TypeError:
+            # 部分版本需要同時傳 attention_mask
+            res = draft.spec_generate(
+                target, {"input_ids": input_ids, "attention_mask": attn},
+                max_new_tokens=max_new_tokens, temperature=0.0, num_steps=num_steps,
+            )
+        spec_ids = res.sequences[0, input_ids.shape[1]:]
+        acc = float(getattr(res, "acceptance_length", float("nan")))
+        spec_text = tokenizer.decode(spec_ids, skip_special_tokens=True)
+        spec_time = time.perf_counter() - t0
+
+        identical = base_text.strip() == spec_text.strip()
+        rec = {
+            "id": i,
+            "category": category,
+            "prompt": prompt,
+            "lossless_identical": identical,
+            "acceptance_length": acc,
+            "base_tokens": int(base_ids.shape[0]),
+            "spec_tokens": int(spec_ids.shape[0]),
+            "base_sec": round(base_time, 3),
+            "spec_sec": round(spec_time, 3),
+            "hf_speedup": round(base_time / spec_time, 3) if spec_time > 0 else None,
+            "base_text_head": base_text[:160],
+            "spec_text_head": spec_text[:160],
+        }
+        records.append(rec)
+        print(f"  [{i+1:2d}/{len(prompts)}] {category:6s} "
+              f"g={acc:.2f} lossless={'OK' if identical else 'MISMATCH'} "
+              f"base={rec['base_sec']:.1f}s spec={rec['spec_sec']:.1f}s "
+              f"({rec['hf_speedup']}x)", flush=True)
+    return {"records": records, "summary": summarize(records)}
+
+
+def summarize(records):
+    """依 category 與整體彙總接受長度與無損性。"""
+    summary = {}
+    for cat in sorted({r["category"] for r in records}):
+        rs = [r for r in records if r["category"] == cat]
+        accs = [r["acceptance_length"] for r in rs if r["acceptance_length"] == r["acceptance_length"]]
+        sps = [r["hf_speedup"] for r in rs if r["hf_speedup"]]
+        summary[cat] = {
+            "n": len(rs),
+            "mean_acceptance_length": round(statistics.mean(accs), 3) if accs else None,
+            "mean_hf_speedup": round(statistics.mean(sps), 3) if sps else None,
+            "all_lossless": all(r["lossless_identical"] for r in rs),
+        }
+    all_accs = [r["acceptance_length"] for r in records if r["acceptance_length"] == r["acceptance_length"]]
+    summary["ALL"] = {
+        "n": len(records),
+        "mean_acceptance_length": round(statistics.mean(all_accs), 3) if all_accs else None,
+        "all_lossless": all(r["lossless_identical"] for r in records),
+    }
+    return summary
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--prompts", default=str(Path(__file__).with_name("prompts.json")))
+    ap.add_argument("--max-new-tokens", type=int, default=512)
+    ap.add_argument("--num-steps", type=int, default=1, help="1 = 最快；2 = 接受長度較高但慢一點")
+    ap.add_argument("--out", default=None)
+    args = ap.parse_args()
+
+    prompts = json.loads(Path(args.prompts).read_text(encoding="utf-8"))
+    print(f"[info] {len(prompts)} 個 prompt, num_steps={args.num_steps}", flush=True)
+    result = measure_acceptance(prompts, max_new_tokens=args.max_new_tokens, num_steps=args.num_steps)
+
+    out = args.out or str(Path(__file__).with_name(f"results_acceptance_step{args.num_steps}.json"))
+    Path(out).write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"[done] 結果已寫入 {out}")
+    print(json.dumps(result["summary"], ensure_ascii=False, indent=2))
+    return 0 if result["summary"]["ALL"]["all_lossless"] else 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+

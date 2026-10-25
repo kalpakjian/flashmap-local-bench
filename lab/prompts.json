@@ -1,0 +1,62 @@
+[
+  {
+    "id": "math-1",
+    "category": "math",
+    "prompt": " Natalia sold clips to 48 of her friends in April, and then she sold half as many clips in May. How many clips did Natalia sell altogether in April and May? Show your reasoning."
+  },
+  {
+    "id": "math-2",
+    "category": "math",
+    "prompt": "A robe takes 2 bolts of blue fiber and half that much white fiber. How many bolts in total does it take? Answer step by step."
+  },
+  {
+    "id": "math-3",
+    "category": "math",
+    "prompt": "Weng earns $12 an hour for babysitting. Yesterday, she just did 50 minutes of babysitting. How much did she earn? Show your reasoning."
+  },
+  {
+    "id": "math-4",
+    "category": "math",
+    "prompt": "Mark has a garden with flowers. He planted plants of three different colors in it. Ten of them are yellow, and there are 80% more of those in purple. There are only 25% as many green flowers as there are yellow and purple flowers. How many flowers does Mark have in his garden?"
+  },
+  {
+    "id": "math-5",
+    "category": "math",
+    "prompt": "Jason had 20 lollipops. He gave Denny some lollipops. Now Jason has 12 lollipops. How many lollipops did Jason give to Denny? Explain step by step."
+  },
+  {
+    "id": "code-1",
+    "category": "code",
+    "prompt": "Write a Python function `def is_palindrome(s: str) -> bool` that returns True if s is a palindrome, ignoring case and non-alphanumeric characters. Include a few example calls."
+  },
+  {
+    "id": "code-2",
+    "category": "code",
+    "prompt": "Write a Python function `def merge_sorted(a: list[int], b: list[int]) -> list[int]` that merges two sorted lists into one sorted list in O(n+m) time. Show the implementation and a short explanation."
+  },
+  {
+    "id": "code-3",
+    "category": "code",
+    "prompt": "Implement a Python function `def fizzbuzz(n: int) -> list[str]` that returns the FizzBuzz sequence from 1 to n as a list of strings. Then print the result for n = 15."
+  },
+  {
+    "id": "code-4",
+    "category": "code",
+    "prompt": "Write a Python function `def fib(n: int) -> int` that returns the nth Fibonacci number using memoization, and explain why memoization helps. Include a recursive and an iterative version."
+  },
+  {
+    "id": "chat-1",
+    "category": "chat",
+    "prompt": "Explain in simple terms why the sky appears blue, and what would happen if the Sun's atmosphere had no scattering."
+  },
+  {
+    "id": "chat-2",
+    "category": "chat",
+    "prompt": "Give me three practical tips for staying focused while working from home, with a brief reason for each."
+  },
+  {
+    "id": "chat-3",
+    "category": "chat",
+    "prompt": "Write a short, friendly paragraph introducing a fictional coffee shop that specializes in single-origin beans. Keep it under 120 words."
+  }
+]

@@ -1,0 +1,1344 @@
+ 
+ FlashMap: Flow Map Speculative Decoding 
+ Report GitHub Issue 
+ × 
+ Title: 
+ Content selection saved. Describe the issue below: 
+ Description: 
+ arXiv is now an independent nonprofit! 
+ Learn more 
+ &times; 
+ Back to arXiv 
+ License: CC BY 4.0
+arXiv:2610.24365v1 [cs.CL] 17 Oct 2026 
+ FlashMap : Flow Map Speculative Decoding 
+ Jeff Shen
+ † † thanks: Corresponding author. shenjeff@princeton.edu 
+ Affiliation:  Polymathic AI
+ Affiliation:  Princeton University
+ Zhejian Zhou
+ Affiliation:  USC Information Sciences Institute
+ Ryan Lee
+ Affiliation:  USC Information Sciences Institute
+ Jonathan May
+ Affiliation:  USC Information Sciences Institute
+ Shirley Ho
+ Affiliation:  Polymathic AI
+ Affiliation:  Princeton University
+ Affiliation:  New York University
+ Affiliation:  Flatiron Institute
+ Abstract 
+ Speculative decoding accelerates large language model (LLM) inference by using a lightweight drafter to propose a block of tokens that the target model verifies in one parallel pass.
+Autoregressive drafters generate this block one token at a time, whereas block diffusion drafters such as DFlash generate it in one pass, making drafting faster.
+However, these diffusion drafters predict each token independently, ignoring dependencies between tokens in the block.
+We introduce FlashMap , a continuous flow drafter that conditions a flow map language model on the target model’s hidden states and generates the whole block in one forward pass while capturing inter-token dependencies.
+On Qwen3-8B, FlashMap is faster than a matched DFlash baseline on every benchmark, with 7% higher average speedup and up to 6.1 × 6.1\times lossless acceleration.
+ Code (Github) 
+ (a) Target LLM (frozen) we landed in FlashMap drafter all K K slots in one pass noise x 0 ∼ 𝒩 ⁡ ( 0 , I ) x_{0}\sim\mathcal{N}(0,I) K K Embed E E Self-Attn Cross-Attn MLP × L \times L adaLN ( s , t ) (s,t) Proj hidden states LM head logits new york on friday night y ^ 1 : K \hat{y}_{1:K} argmax frozen trained Target LLM verifies all K K slots in one pass next round: accepted tokens extend the context (b) Drafting two slots after we landed in ; the target continues with new york or san diego , each with probability 1 2 \tfrac{1}{2} . new ? san york ? diego slot 1 slot 2 new ? san york ? diego slot 1 slot 2 
+ DFlash .
+Each slot is predicted independently, so the draft follows q 1 ​ ( y 1 ) ​ q 2 ​ ( y 2 ) q_{1}(y_{1})\,q_{2}(y_{2}) .
+Half of the drafts mix the modes ( new diego , san york ) and are rejected at slot 2. 
+ FlashMap .
+Each noise sample x 0 x_{0} is sent to a single block X 0 , 1 ​ ( x 0 ) X_{0,1}(x_{0}) , so the noise selects the mode for both slots jointly.
+Every draft is new york or san diego . 
+ (c) 
+ Math 
+ Code 
+ Chat 
+ Temp. 
+ Method 
+ GSM8K 
+ MATH 
+ AIME25 
+ MBPP 
+ HumanEval 
+ LCB 
+ MT-Bench 
+ Alpaca 
+ Arena-Hard 
+ T = 0 T=0 
+ EAGLE-3 (16) 
+ 3.20 
+ 3.09 
+ 2.82 
+ 2.57 
+ 2.87 
+ 2.90 
+ 1.80 
+ 1.78 
+ 1.92 
+ DFlash 
+ 5.77 
+ 5.59 
+ 4.67 
+ 3.74 
+ 4.50 
+ 4.88 
+ 2.48 
+ 2.34 
+ 2.67 
+ FlashMap (1 step) 
+ 6.14 
+ 5.89 
+ 4.89 
+ 4.02 
+ 4.73 
+ 5.26 
+ 2.73 
+ 2.56 
+ 3.04 
+ FlashMap (2 steps) 
+ 5.89 
+ 5.57 
+ 4.61 
+ 3.79 
+ 4.53 
+ 5.06 
+ 2.47 
+ 2.33 
+ 2.76 
+ T = 1 T=1 
+ EAGLE-3 (16) 
+ 2.94 
+ 2.69 
+ 2.24 
+ 2.37 
+ 2.53 
+ 2.51 
+ 1.66 
+ 1.57 
+ 1.55 
+ DFlash 
+ 4.89 
+ 4.24 
+ 3.23 
+ 3.42 
+ 3.82 
+ 3.54 
+ 2.24 
+ 2.06 
+ 2.05 
+ FlashMap (1 step) 
+ 5.12 
+ 4.39 
+ 3.56 
+ 3.47 
+ 3.95 
+ 3.85 
+ 2.44 
+ 2.28 
+ 2.30 
+ FlashMap (2 steps) 
+ 5.07 
+ 4.15 
+ 3.28 
+ 3.43 
+ 3.86 
+ 3.57 
+ 2.29 
+ 2.14 
+ 2.14 
+ Figure 1: 
+(a) One round of speculative decoding: the drafter reads hidden features from the target and proposes the next K K tokens in parallel with a flow map, and the target verifies them in one pass.
+(b) Sampling two correlated slots in the few-step regime (adapted from Figure 3 of FMLM): DFlash predicts each slot independently, so half of its drafts pair tokens from different modes, while FlashMap can represent a joint over all slots.
+ (c) Speedup ( × \times ) on Qwen3-8B, with FlashMap drafting in 1 or 2 flow-map steps. Bold marks the best speedup.
+ 1 Introduction 
+ Speculative decoding drafts a block of future tokens with a lightweight model and verifies it in one parallel pass of the larger target LLM. As a result, speedup depends on how many drafted tokens are accepted and how cheaply, in terms of compute, they are drafted.
+EAGLE-3  ( Li et al., 2025 ) achieves high acceptance by conditioning on the hidden states of the target model but drafts autoregressively so cost grows with block length. 
+ DFlash  ( Chen et al., 2026 ) instead drafts an entire block in one forward pass using a lightweight block diffusion model, yielding over 6 × \times lossless acceleration.
+However, a single masked-denoising pass predicts each position in the block independently.
+Prior work finds that draft tokens from this model can be individually plausible but jointly inconsistent, leading to smaller accepted prefixes, and acceptance decays at later positions  ( Cheng et al., 2026 ) . 
+ By changing the drafter’s generative model, we no longer draft each token independently (known as the factorized approximation ).
+Flow Map Language Models  ( Lee et al., 2026 ) distill a continuous flow over one-hot token embeddings into a flow map that transports Gaussian noise to a full sequence in one network evaluation.
+Because the map acts on the whole block jointly, it can represent dependencies between tokens that a drafter predicting each position independently cannot, while keeping DFlash’s one-pass cost (Figure  1 ). 
+ Contributions. 
+ We evaluate FlashMap on Qwen3-8B across nine math, code, and chat benchmarks (Qwen3-4B in Appendix  C ), against EAGLE-3 and DFlash retrained under identical data and settings.
+Our contributions are: 
+ (1)  Flow map drafting. We introduce FlashMap , the first speculative decoding drafter built on a continuous flow. FlashMap combines DFlash’s target-conditioning, single-pass block drafting with flow map language models, allowing it to draft a whole block that carries inter-token dependencies in a way that DFlash cannot. 
+ (2)  Analysis of flow map drafts. We study what drives FlashMap ’s acceptance length, using proposal-length ablations, conditional acceptance curves, and a shuffle test that separates the contribution of per-slot predictions from that of inter-token dependencies. 
+ 2 Background 
+ Speculative decoding. 
+ Let p p be an autoregressive target model over a vocabulary 𝒱 \mathcal{V} and c c the current context.
+In each round, a drafter proposes a block y ^ 1 : K \hat{y}_{1:K} from a proposal q ( ⋅ ∣ c ) q(\cdot\mid c) , and the target scores all K K positions in one forward pass.
+The target accepts tokens left to right with the rejection rule of Leviathan et al. (2023) , which keeps the output distributed exactly as p p .
+At the first rejection, the target resamples that token from the residual distribution and discards the rest of the block.
+Under greedy decoding ( T = 0 T=0 ), the rule reduces to keeping the longest prefix that matches the target’s argmax.
+The acceptance length γ ∈ [ 1 , K + 1 ] \gamma\in[1,K+1] is the expected number of tokens committed per round, including the one contributed by the target.
+The per-token latency is ( T draft + T verify ) / γ (T_{\text{draft}}+T_{\text{verify}})/\gamma   ( Chen et al., 2026 ) , where T verify T_{\text{verify}} is roughly constant because decoding is memory-bound  ( Chen et al., 2023 ) . 
+ DFlash. 
+ DFlash  ( Chen et al., 2026 ) drafts with a block discrete diffusion model.
+It attends to hidden states from several target layers and denoises a fully masked block in a single forward pass, so T draft T_{\text{draft}} is independent of K K .
+Its token embedding and language modeling (LM) head are copied from the target and kept frozen, so only a few transformer layers are trained.
+Training samples random anchor positions in target-generated responses and weights the per-slot cross-entropy by exponentially decaying weights over block positions. 
+ Factorization error. 
+ Discrete diffusion samples tokens at every denoising step.
+Sampling several tokens in one step would require their joint distribution over 𝒱 K \mathcal{V}^{K} , whose size is exponential in K K and thus intractable, so few-step inference with discrete diffusion typically relies on the factorized approximation: each position is instead predicted independently given the noisy state  ( Lee et al., 2026 ) .
+A one-pass drafter, whose input is the fully masked block, therefore proposes 
+ q ( y 1 : K ∣ c ) = ∏ k = 1 K q k ( y k ∣ c ) . q(y_{1:K}\mid c)=\prod_{k=1}^{K}q_{k}(y_{k}\mid c). 
+ (1) 
+ Per-slot cross-entropy is minimized by the target’s marginals q k = p ⁡ ( y k ∣ c ) q_{k}=p(y_{k}\mid c) .
+The remaining gap is the total correlation KL ( p ( y 1 : K ∣ c ) ∥ ∏ k p ( y k ∣ c ) ) \mathrm{KL}\big(p(y_{1:K}\mid c)\,\|\,\prod_{k}p(y_{k}\mid c)\big) , which no amount of model capacity removes.
+For example, if the continuation is “new york” or “san diego” with equal probability, the drafter proposes “new diego” or “san york” half of the time  ( Lee et al., 2026 ) .
+This is a problem that plagues many non-autoregressive methods ( Gu et al., 2018 , e.g.,) .
+Taking a large number of steps at inference time recovers these dependencies, but is antithetical to the goal of a fast, few-pass drafter. 
+ Flows over one-hot tokens. 
+ Flow Map Language Models (FMLM;  Lee et al., 2026 ) instead model language with a continuous flow.
+The flow’s only randomness is the initial noise, which a deterministic trajectory transports to the whole block jointly.
+A sequence y ∈ 𝒱 L y\in\mathcal{V}^{L} is represented by its one-hot encoding x 1 ∈ ℝ L × | 𝒱 | x_{1}\in\mathbb{R}^{L\times|\mathcal{V}|} and decoded with an argmax.
+Following rectified flow ( Lipman et al., 2023 ; Liu et al., 2022 ; Albergo et al., 2025 ) , noise and data are connected by 
+ I t = ( 1 − t ) ​ x 0 + t ​ x 1 , x 0 ∼ 𝒩 ⁡ ( 0 , I ) , I_{t}=(1-t)\,x_{0}+t\,x_{1},\qquad x_{0}\sim\mathcal{N}(0,I), 
+ (2) 
+ and the velocity v t ​ ( x ) = 𝔼 ⁡ [ x 1 − x 0 ∣ I t = x ] v_{t}(x)=\mathbb{E}[x_{1}-x_{0}\mid I_{t}=x] transports x 0 x_{0} at t = 0 t=0 to data at t = 1 t=1 .
+FMLM predicts the clean data rather than the velocity, since the clean data are low-rank while the velocity is noisy and full-rank  ( Li and He, 2026 ) .
+A denoiser D t θ D^{\theta}_{t} outputs the clean-data prediction, and the velocity is recovered as 
+ v t θ ​ ( x ) = D t θ ​ ( x ) − x 1 − t . v^{\theta}_{t}(x)=\frac{D^{\theta}_{t}(x)-x}{1-t}. 
+ (3) 
+ Because one-hot vectors are the vertices of the simplex, the true denoiser D t ( x ) l = p ( y l = ⋅ ∣ I t = x ) D_{t}(x)^{l}=p(y_{l}=\cdot\mid I_{t}=x) lies on the simplex at every position.
+FMLM therefore parameterizes D t θ D^{\theta}_{t} with a softmax and trains it with cross-entropy, 
+ ℒ CE ( θ ) = 𝔼 t , x 0 , x 1 [ − ∑ l = 1 L x 1 l ⋅ log D t θ ( I t ) l ] , \mathcal{L}_{\mathrm{CE}}(\theta)=\mathbb{E}_{t,x_{0},x_{1}}\Big[-\sum_{l=1}^{L}x_{1}^{l}\cdot\log D^{\theta}_{t}(I_{t})^{l}\Big], 
+ (4) 
+ whose unique minimizer is the true denoiser.
+Sampling integrates the flow with a numerical ODE solver, typically over tens of steps. 
+ Flow maps. 
+ The flow map X s , t X_{s,t} sends the ODE’s state at time s s to its state at time t t   ( Boffi et al., 2025a ; Boffi et al., 2025b ) .
+It satisfies X s , s = id X_{s,s}=\mathrm{id} and the semigroup property X u , t ∘ X s , u = X s , t X_{u,t}\circ X_{s,u}=X_{s,t} .
+FMLM parameterizes it through a two-time denoiser δ s , t \delta_{s,t} on the simplex, 
+ X s , t ​ ( x ) = 1 − t 1 − s ​ x + t − s 1 − s ​ δ s , t ​ ( x ) , X_{s,t}(x)=\frac{1-t}{1-s}\,x+\frac{t-s}{1-s}\,\delta_{s,t}(x), 
+ (5) 
+ which reduces to the denoiser on the diagonal, δ s , s = D s \delta_{s,s}=D_{s}   ( Lee et al., 2026 , Prop. 3.3) .
+A single evaluation X 0 , 1 ​ ( x 0 ) = δ 0 , 1 ​ ( x 0 ) X_{0,1}(x_{0})=\delta_{0,1}(x_{0}) thus maps noise to data.
+The map δ \delta is obtained by distilling a pretrained flow (§ 3.2 ). 
+ 3 Method 
+ Our drafter is a flow over one-hot draft blocks, conditioned on the target in the same way as DFlash.
+We first train it as a flow (§ 3.1 ) and then distill it into a two-time denoiser that drafts a whole block in a single network evaluation (§ 3.2 ).
+Let a a be the position of the anchor y a y_{a} , the last token committed by the target.
+The drafter proposes the next K K tokens, and we index the block by slot k = 1 , … , K k=1,\dots,K , so that slot k k holds y a + k y_{a+k} .
+The drafter operates on a noisy block, which we call the state x ∈ ℝ K × | 𝒱 | x\in\mathbb{R}^{K\times|\mathcal{V}|} : the point on the flow’s trajectory between Gaussian noise ( t = 0 t=0 ) and the one-hot encoding of the K K draft tokens ( t = 1 t=1 ).
+During training the state is the interpolant I t I_{t} , and during drafting it is the current iterate of the flow.
+We write x k ∈ ℝ | 𝒱 | x^{k}\in\mathbb{R}^{|\mathcal{V}|} for the state at slot k k , and c c for the target features available at drafting time. 
+ 3.1 Continuous Flow Drafter 
+ The drafter’s denoiser D t θ ​ ( x , c ) D^{\theta}_{t}(x;c) is trained as in FMLM (Eqs.  2 – 4 ), with changes to the architecture, the input featurization, and the loss weighting. 
+ Architecture. 
+ The backbone is a conditional diffusion transformer (DiT;  Peebles and Xie, 2023 ).
+Each block applies self-attention among the K K slots, cross-attention to context features from the target, and an MLP, each modulated by adaLN-Zero on the time t t .
+The context features are the target’s hidden states from a fixed set of layers, concatenated and linearly projected at each position before the anchor, together with an embedding of the anchor token y a y_{a} .
+Both vocabulary projections are copied from the target and kept frozen: the state enters the network through the target’s embedding matrix E ∈ ℝ | 𝒱 | × d E\in\mathbb{R}^{|\mathcal{V}|\times d} , and the output passes through the target’s LM head, with a softmax over the vocabulary at each slot giving D t θ ​ ( x , c ) D^{\theta}_{t}(x;c) . 
+ Training. 
+ We train on target-generated responses with cached target features and sample many anchor positions per sequence, as in DFlash.
+Each block receives its own time t t and noise x 0 x_{0} and is noised to I t = ( 1 − t ) x 0 + t ⋅ onehot ( y a + 1 : a + K ) I_{t}=(1-t)\,x_{0}+t\cdot\mathrm{onehot}(y_{a+1:a+K}) .
+Following DFlash, we weight the cross-entropy of Eq. ( 4 ) at slot k k by w k = e − ( k − 1 ) / κ w_{k}=e^{-(k-1)/\kappa} .
+The weights emphasize early slots, since an early error invalidates every later token. 
+ Time reparameterization. 
+ With a large vocabulary (e.g., | 𝒱 | = 151,936 |\mathcal{V}|=151{,}936 for Qwen3), the state reveals the clean tokens only within a narrow window of t t near 1 1 ( Lee et al., 2026 ) .
+Sampling t t uniformly therefore spends most of training at times where the state reveals almost nothing or has already revealed everything.
+We adopt FMLM’s decoding-error reparameterization, which measures time by how many tokens have been resolved.
+Let P e ​ ( t ) P_{e}(t) be the probability that decoding the state at a slot by its argmax gives the wrong token; it falls from 1 − 1 / | 𝒱 | 1-1/|\mathcal{V}| under pure noise to 0 0 at t = 1 t=1 .
+The reparameterized time τ ⁡ ( t ) = 1 − P e ​ ( t ) / P e ​ ( 0 ) \tau(t)=1-P_{e}(t)/P_{e}(0) is the fraction of this initial error removed by time t t , so equal steps in τ \tau make equal progress in resolving tokens.
+For our interpolant, P e ​ ( t ) P_{e}(t) has the closed form 
+ P e ​ ( t ) = 1 − 𝔼 z ∼ 𝒩 ⁡ ( 0 , 1 ) ​ [ Φ ​ ( z + t 1 − t ) | 𝒱 | − 1 ] , P_{e}(t)=1-\mathbb{E}_{z\sim\mathcal{N}(0,1)}\Big[\Phi\big(z+\tfrac{t}{1-t}\big)^{|\mathcal{V}|-1}\Big], 
+ (6) 
+ where Φ \Phi is the standard normal CDF.
+We sample τ ∼ 𝒰 ⁡ [ 0 , 1 ] \tau\sim\mathcal{U}[0,1] during training and map it back to t t by inverting τ ⁡ ( t ) \tau(t) ; at inference, we use the grid t n = τ − 1 ​ ( n / N ) t_{n}=\tau^{-1}(n/N) .
+Drafting directly from the flow takes N N Euler steps on this grid, and thus costs N N NFEs per drafting round, typically 𝒪 ⁡ ( 100 ) \mathcal{O}(100) . 
+ 3.2 Distillation into a Flow Map 
+ Drafting with 𝒪 ⁡ ( 100 ) \mathcal{O}(100) network evaluations per round is expensive, and taking fewer Euler steps reduces this cost at the price of a less accurate draft.
+In the extreme of a single step from t = 0 t=0 , the draft loses all joint structure: it is the denoiser’s prediction from pure noise, which is trained on noise drawn independently of the data.
+Its best value is therefore the per-slot marginals whatever the noise, i.e., the factorized drafter of Eq. ( 1 ).
+The noise shapes the sample only through integration, as each step moves the state in a noise-dependent direction that later evaluations resolve into one coherent block. 
+ A flow map  ( Boffi et al., 2025a ; Boffi et al., 2025b ) is the solution operator of the flow’s ODE: X s , t X_{s,t} sends the state at any time s s to the state the ODE reaches at any later time t t .
+Learning it replaces numerical integration over [ s , t ] [s,t] with a single network evaluation, so the exact map preserves the flow’s joint distribution over the block at any number of jumps, including one.
+In practice, a learned map approximates long jumps less accurately than short ones, so at 1-NFE it captures this joint structure only partially (§ 6.2 ).
+Following the flow map distillation framework of Boffi et al. (2025a) , we distill the trained flow (the teacher) into a flow map (the student), a two-time denoiser δ s , t ϕ ​ ( x , c ) \delta^{\phi}_{s,t}(x;c) that estimates the jump from s s to t t .
+With a single jump, the draft is X 0 , 1 ​ ( x 0 ) = δ 0 , 1 ϕ ​ ( x 0 , c ) X_{0,1}(x_{0})=\delta^{\phi}_{0,1}(x_{0};c) ; more jumps can be composed at the cost of one evaluation each  ( Boffi et al., 2025a ) . 
+ Semigroup distillation. 
+ We train the student on the semigroup property of flow maps  ( Boffi et al., 2025a ; Boffi et al., 2025b ) : a jump from s s to t t must land in the same place as a jump from s s to an intermediate time u u followed by a jump from u u to t t .
+For zero-length jumps ( s = t s=t ), the target is the frozen flow’s denoiser D s θ ​ ( I s ) D^{\theta}_{s}(I_{s}) , which enforces the tangent condition δ s , s = D s \delta_{s,s}=D_{s}   ( Boffi et al., 2025b ) and anchors the student to the teacher.
+For longer jumps ( s < t s<t ), the target is the student’s own estimate from splitting the jump at the midpoint u u , which in terms of the two-time denoiser is a weighted average  ( Lee et al., 2026 ) : 
+ δ ¯ s , t = sg ⁡ ( λ ​ δ s , u ϕ ​ ( I s ) + ( 1 − λ ) ​ δ u , t ϕ ​ ( X s , u ϕ ​ ( I s ) ) ) , \bar{\delta}_{s,t}=\sg\Big(\lambda\,\delta^{\phi}_{s,u}(I_{s})+(1-\lambda)\,\delta^{\phi}_{u,t}\big(X^{\phi}_{s,u}(I_{s})\big)\Big), 
+ (7) 
+ where λ = ( 1 − t ) ​ ( u − s ) ( 1 − u ) ​ ( t − s ) \lambda=\frac{(1-t)(u-s)}{(1-u)(t-s)} , X s , u ϕ X^{\phi}_{s,u} is the student’s first jump (Eq.  5 ), and sg \sg denotes the stop-gradient, since the target is computed from the student itself.
+Training toward this target bootstraps from short jumps, which are anchored to the teacher, to progressively longer ones  ( Boffi et al., 2025b ) .
+Following FMLM, half of the blocks train zero-length jumps and the rest train jumps of random start and length, including a small fraction of full jumps ( 0 , 1 ) (0,1) .
+The resulting map is valid for any pair of times, so it can also draft with several shorter jumps.
+Appendix  B describes an optimization for multi-step jumps. 
+ Temp. 
+ Method 
+ Math 
+ Code 
+ Chat 
+ GSM8K 
+ MATH 
+ AIME25 
+ MBPP 
+ HumanEval 
+ LCB 
+ MT-Bench 
+ Alpaca 
+ Arena-Hard 
+ T = 0 T=0 
+ EAGLE-3 (16) 
+ 6.75 
+ 6.43 
+ 5.96 
+ 5.38 
+ 6.04 
+ 6.16 
+ 3.75 
+ 3.71 
+ 3.97 
+ DFlash 
+ 7.43 
+ 7.09 
+ 5.92 
+ 4.77 
+ 5.74 
+ 6.35 
+ 3.14 
+ 2.96 
+ 3.38 
+ FlashMap (1 step) 
+ 7.69 
+ 7.24 
+ 6.00 
+ 4.95 
+ 5.82 
+ 6.65 
+ 3.34 
+ 3.14 
+ 3.71 
+ FlashMap (2 steps) 
+ 8.31 
+ 7.69 
+ 6.36 
+ 5.24 
+ 6.26 
+ 7.19 
+ 3.40 
+ 3.20 
+ 3.80 
+ T = 1 T=1 
+ EAGLE-3 (16) 
+ 6.15 
+ 5.55 
+ 4.61 
+ 4.94 
+ 5.29 
+ 5.37 
+ 3.43 
+ 3.25 
+ 3.20 
+ DFlash 
+ 6.30 
+ 5.40 
+ 4.10 
+ 4.37 
+ 4.88 
+ 4.62 
+ 2.85 
+ 2.62 
+ 2.61 
+ FlashMap (1 step) 
+ 6.40 
+ 5.40 
+ 4.37 
+ 4.29 
+ 4.87 
+ 4.90 
+ 3.00 
+ 2.81 
+ 2.83 
+ FlashMap (2 steps) 
+ 7.11 
+ 5.74 
+ 4.52 
+ 4.75 
+ 5.35 
+ 5.06 
+ 3.16 
+ 2.96 
+ 2.95 
+ Table 1: Acceptance length γ \gamma on Qwen3-8B.
+For each temperature and benchmark, bold marks the best result. Speedups are in Figure  1 (c). 
+ 4 Experimental Setup 
+ Models. 
+ We use Qwen3-4B and Qwen3-8B ( Yang et al., 2025 ) as target models and implement all drafters in DeepSpec 1 1 
+ 1 
+ https://github.com/deepseek-ai/DeepSpec .
+We extract the target model’s hidden states at layers 1, 9, 17, 25, and 33, to be used as inputs to all drafters. 
+ FlashMap uses 6 DiT blocks ( Peebles and Xie, 2023 ) , embedding dimension 2048, 16 attention heads, QK-norm, and GELU activations in the MLPs.
+We note that DFlash uses the same embedding dimension as the target model.
+Thus, for Qwen3-8B, DFlash’s embedding dimension is 4096, and the drafter has a total of ∼ {\sim} 1B parameters, while FlashMap has ∼ {\sim} 0.5B parameters.
+For EAGLE-3 we use training-time test of TTT=7, top-k of 10, and a tree size of 16 to ensure that all methods have the same verification budget. 
+ Training. 
+ We train on 500K samples from Open-PerfectBlend 2 2 
+ 2 
+ https://huggingface.co/datasets/mlabonne/open-perfectblend , an open-source version of PerfectBlend ( Xu et al., 2024 ) ; we use only a subset of the full dataset because of storage and compute limits.
+We train with block size K = 16 K=16 , and set the slot loss decay w k w_{k} to κ = 7 \kappa=7 .
+We use the AdamW optimizer ( Loshchilov and Hutter, 2019 ) with ( β 1 , β 2 ) = ( 0.9 , 0.95 ) (\beta_{1},\beta_{2})=(0.9,0.95) and weight decay 0.1 0.1 , which we find important for stable training.
+We use a cosine learning rate schedule with 4% warmup and a peak learning rate of 6 × 10 − 4 6\times 10^{-4} .
+We train in bf16 with gradient-norm clipping at 1.0 1.0 and a global batch size of 256 for 20 epochs (39K steps).
+The EAGLE-3 and DFlash baselines are retrained with the same data and under the same settings for controlled comparison. 
+ Distillation. 
+ We initialize the flow map from the weights of the flow teacher.
+A fraction 1 / 16 1/16 of the jumps are full jumps ( s , t ) = ( 0 , 1 ) (s,t)=(0,1) , and we use a warmup-stable-decay learning rate schedule with 4% warmup, peak learning rate of 5 × 10 − 5 5\times 10^{-5} , and 20% decay.
+We use no weight decay and train for 12 epochs (23k steps).
+All other settings match those of the teacher. 
+ Evaluation. 
+ We evaluate on nine benchmarks in three domains: math (GSM8K ( Cobbe et al., 2021 ) , MATH ( Hendrycks et al., 2021 ) , and AIME25 ( Zhang and Math-AI, 2025 ) ), code (MBPP ( Austin et al., 2021 ) , HumanEval ( Chen et al., 2021 ) , and LiveCodeBench (LCB; Jain et al. (2024) )), and chat (MT-Bench ( Bai et al., 2024 ) , Alpaca ( Li et al., 2023 ) , and Arena-Hard ( Li et al., 2024 ) ).
+We report the acceptance length γ \gamma and the end-to-end speedup over autoregressive decoding with the target, at temperatures T = 0 T=0 and T = 1 T=1 .
+ FlashMap drafts with one or two steps, i.e., jumps of the flow map.
+All evaluations use SGLang at concurrency 1 and speedups are measured on an NVIDIA H200 NVL GPU, unless otherwise specified. 
+ Figure 2: Acceptance length γ \gamma against the proposal length K K used at inference on Qwen3-8B at T = 0 T=0 , for FlashMap with one and two steps and for DFlash, retrained with the same data and settings, on GSM8K, HumanEval, and MT-Bench (80 prompts each).
+All drafters were trained at K = 16 K=16 and run at smaller K K without retraining.
+Each point is a single run, so no uncertainty is shown. 
+ 5 Results 
+ We show the benefit of speculative decoding methods over plain autoregressive decoding with the target model in terms of speedup (Figure  1 (c)) and acceptance length γ \gamma (Table  1 ) for various draft models, as applied to Qwen3-8B.
+We show analogous results for Qwen3-4B in Appendix  C .
+Across all models, speedups are largest for math and code tasks, where text is highly structured, and smaller for chat tasks, which are more open-ended;
+in chat, a given piece of text can have many possible relevant continuations. 
+ One step FlashMap is the fastest drafter. 
+ At both T = 0 T=0 and T = 1 T=1 , FlashMap at 1 NFE leads to the highest speedup over the base model across every task and domain, with speedups of up to 6.14 × 6.14\times for GSM8K at T = 0 T=0 .
+As compared to DFlash, FlashMap at 1 NFE is 7.4 % 7.4\% faster on average across all tasks. 
+ One step FlashMap also drafts more accurately than DFlash. 
+ Although FlashMap at 1 NFE does not have the highest acceptance length in all, or even a majority of the tasks, it does have higher acceptance length than DFlash in 15/18 settings, despite having half the parameters of DFlash.
+This indicates that the wins in speedup are not coming from a smaller model alone (i.e., reduced latency)— FlashMap at 1 NFE is also a highly accurate model.
+Our gains over DFlash are largest in the chat tasks—the most difficult ones.
+In particular, at T = 0 T=0 , while acceptance length/speedup on math tasks is only 2.3%/5.5% higher than for DFlash, on chat tasks this increases to 7.4%/11.1%. 
+ AR drafters are accurate but slow. 
+ On the acceptance length front, FlashMap at 2 NFE and EAGLE-3 are both stronger than FlashMap at 1 NFE, especially at T = 1 T=1 .
+In particular, at T = 1 T=1 , EAGLE-3 is the drafter with the highest acceptance length in 6/9 tasks.
+However, EAGLE-3, being an autoregressive drafter, requires multiple sequential passes to produce a single draft, resulting in very high latency.
+Given that total speedup depends both on acceptance length and latency, the small edge that EAGLE-3 has in terms of acceptance length does not offset its higher latency, leading to EAGLE-3 being not competitive with parallel drafters.
+Indeed, at T = 1 T=1 , averaged across tasks, EAGLE-3 has 9% higher acceptance length but is a whopping 35% slower than FlashMap at 1 NFE. 
+ Two step FlashMap has the best acceptance of any parallel drafter. 
+ FlashMap at 2 NFE beats DFlash in acceptance length by an average of 10 % 10\% , and wins 18/18 settings (at T = 0 T=0 and T = 1 T=1 ).
+It also remains slightly faster than DFlash, winning 13/18 settings, despite two draft passes (Appendix  B ). 
+ As an alternative to more function evaluations, another way to spend more drafting compute is to draft several blocks from independent noise draws and verify them together as a tree, which we explore in Table  4 ;
+we find that this can lead to speedups of ∼ 11 % {\sim}11\% over single-sample drafting with standard chain verification. 
+ Figure 3: Conditional acceptance rate on Qwen3-8B at T = 0 T=0 for the drafters of Figure  2 : the probability that the draft token at position k k of a K = 16 K=16 block is accepted given that all earlier tokens in the block were accepted, pooled over the math, code, and chat tasks.
+Positions are 0-indexed, so position k k is slot k + 1 k+1 ; shaded bands are 95% Wilson intervals. 
+ 6 Discussion 
+ The results above show that FlashMap at one step is the fastest drafter we evaluate.
+We now ask where its gains come from, whether its drafts use dependencies between tokens, and what limits one-step drafting. 
+ 6.1 Where is acceptance lost? 
+ A parallel drafter proposes a whole block in one pass, so a longer block adds little drafting cost.
+We investigate how acceptance length varies as a function of block size.
+Figure  2 shows acceptance length when the drafters, all trained at K = 16 K=16 , propose blocks of K = 2 K=2 to 16 16 tokens on Qwen3-8B ( Chen et al. 2026 show that the penalty of such a training-inference mismatch in K K is ∼ 0.15 {\sim}0.15 tokens), and Figure  3 shows the conditional acceptance rate at each slot of a 16-token block (the acceptance rate at a given slot, assuming that all tokens before that position were accepted). 
+ Acceptance length generally grows with K K up to the trained block length, with γ \gamma growing more slowly for chat than for math and code (note the different y-axes).
+The conditional acceptance curves show where the drafters differ.
+One-step FlashMap matches or exceeds DFlash at the first slot in every domain; however, the conditional acceptance decays more rapidly for FlashMap at 1 NFE than for DFlash.
+This indicates that the later slots in the block are less likely to be accepted.
+For FlashMap with two steps, the rate at slot 16 is higher than for DFlash across all domains.
+Because a gain at an early slot counts toward every block that reaches it, while a loss at a late slot affects only the few blocks that get that far, one-step FlashMap still accepts more than DFlash overall (Table  1 ), but it gains less than DFlash from its last slots. 
+ Notably, two-step FlashMap ’s conditional acceptance does not decay within the block for any domain.
+The conditional acceptance curve stays flat, or even rises, matching what is observed in models that apply sequential postprocessing to re-capture inter-token dependencies ( Cheng et al., 2026 ) .
+This indicates that it may gain more than DFlash or one-step FlashMap from blocks even longer than 16 tokens, but testing this requires drafters trained at larger K K .
+Why one-step drafts, which come from a joint model, fall below a factorized drafter at late positions in the block is the question we turn to next. 
+ 6.2 Does FlashMap capture joint structure? 
+ Whether a draft is accepted depends on two properties of the drafter’s distribution over blocks: its per-slot marginals, i.e., how often each slot’s token matches the target on its own, and the dependence between slots, i.e., whether the tokens in a block are consistent with each other.
+DFlash has only marginals: it predicts each slot independently and, at T = 0 T=0 , drafts the most likely token of each.
+ FlashMap drafts the whole block from one noise draw, which can make the block consistent, but each slot’s token then depends on the noise, so it is not necessarily the most likely token under that slot’s marginal.
+The conditional acceptance rates in Figure  3 reflect both properties and cannot separate them.
+We separate them with a shuffle test: we compare drafts whose slots all come from one shared noise draw ( shared ) with drafts using a different, independent noise draw per slot ( shuffled ).
+Shuffling keeps each slot’s marginal but removes the dependence between slots, so γ shuffled \gamma_{\mathrm{shuffled}} measures the marginals alone and Δ = γ shared − γ shuffled \Delta=\gamma_{\mathrm{shared}}-\gamma_{\mathrm{shuffled}} is the acceptance gain due to the draft’s joint structure.
+A drafter whose proposal does not depend on the noise, such as DFlash, has Δ = 0 \Delta=0 by construction, whereas a drafter that exploits joint structure has Δ > 0 \Delta>0 .
+We show the results of the shuffle test in Table 2 . 
+ Integration creates joint structure. 
+ Joint structure is modelled along a flow’s trajectory.
+Indeed, when performing only a single evaluation of the flow model, we find that there is no difference in acceptance length between the shared noise configuration and the shuffled noise configuration, indicating that the flow captures no joint structure at 1 NFE.
+However, the same flow, when integrated for 16 steps, has Δ > 0 \Delta>0 , and indeed, can attribute almost an entire token’s worth of acceptance to joint structure.
+This indicates that it is integration of the flow that resolves each noise draw into one consistent block.
+It is this integration that we try to distill into a few-step flow map in FlashMap . 
+ Two steps capture most of it. 
+ At 1 NFE, FlashMap retains only a small fraction of the Δ \Delta in the 16-step teacher, while at 2-NFE, FlashMap recovers most of the Δ \Delta in the 16-step teacher.
+This indicates that a single jump of the flow map from pure noise underutilizes the noise, and produces a draft that, while not totally factorized, does not fully capture all inter-token dependencies—consistent with its falling conditional acceptance in Figure  3 .
+In contrast, the 2 NFE flow map heavily exploits inter-token dependencies, which explains its flat or increasing conditional acceptance along the block (Figure  3 ). 
+ Math 
+ Code 
+ Chat 
+ Drafter 
+ Shared 
+ Shuffled 
+ Δ \Delta 
+ Shared 
+ Shuffled 
+ Δ \Delta 
+ Shared 
+ Shuffled 
+ Δ \Delta 
+ DFlash 
+ 7.29 
+ 7.29 
+ 0.00 
+ 6.07 
+ 6.07 
+ 0.00 
+ 2.92 
+ 2.92 
+ 0.00 
+ Flow (1 step) 
+ 6.56 
+ 6.56 
+ 0.00 
+ 5.46 
+ 5.46 
+ 0.00 
+ 2.88 
+ 2.88 
+ 0.00 
+ Flow (16 steps) 
+ 7.85 
+ 7.03 
+ 0.82 
+ 6.70 
+ 6.11 
+ 0.59 
+ 3.32 
+ 3.03 
+ 0.29 
+ FlashMap (1 step) 
+ 7.05 
+ 6.73 
+ 0.32 
+ 5.92 
+ 5.78 
+ 0.13 
+ 3.04 
+ 2.96 
+ 0.08 
+ FlashMap (2 steps) 
+ 7.70 
+ 6.92 
+ 0.78 
+ 6.57 
+ 6.11 
+ 0.47 
+ 3.27 
+ 3.03 
+ 0.25 
+ Table 2: Shuffle test on Qwen3-8B at T = 0 T=0 : accepted draft tokens per block, for a draft with shared noise across slots (shared) and for a draft with independent per-slot noise (shuffled). Δ \Delta is the difference between the two, with a larger value indicating a greater acceptance due to joint structure. Results for Qwen3-4B are in Table 5 . 
+ 6.3 What limits one-step drafting? 
+ At both 1 NFE and 2 NFE, FlashMap trails the flow teacher at 16 NFE in terms of acceptance length under the shared setting, which is the usual inference setting.
+A better distillation strategy would reduce this gap and make the 1 NFE flow map competitive with the many-NFE flow teacher.
+Further, FlashMap also trails the teacher in the shuffled setting, indicating that the per-position marginals are also less well estimated. 
+ While in theory flow map distillation enables few-step flow maps to capture inter-token dependencies, these results indicate that there is still a gap between few-step flow map models and one-step models.
+Indeed, some recent works on flow map language models find that while performance of such models is strong in the few-step regime, one-step models still suffer from high generative perplexity or collapsed entropy ( Potaptchik et al., 2026 ; Tang and Wang, 2026 , e.g.,) .
+Our results also indicate potential for future work to improve, both on the theoretical and empirical sides, the distillation strategies for discrete flow maps, particularly for inference at 1 NFE. 
+ 7 Related Work 
+ Speculative decoding. 
+ Speculative decoding drafts tokens with a cheap model and verifies them with the target in one parallel pass, while keeping the target’s output distribution  ( Leviathan et al., 2023 ; Chen et al., 2023 ) .
+Most drafters are autoregressive. EAGLE-3  ( Li et al., 2025 ) conditions a lightweight drafter on the target’s hidden states and reaches high acceptance, but it drafts one token per forward pass, so its drafting cost grows with block length. 
+ Diffusion drafters. 
+ Discrete diffusion drafters instead propose a whole block in parallel.
+DiffuSpec  ( Li et al., 2026 ) and SpecDiff-2  ( Sandler et al., 2026 ) repurpose large pretrained diffusion LMs, adding causal path search and verifier calibration respectively, but their drafter size limits practical speedups.
+DFlash  ( Chen et al., 2026 ) trains a lightweight block diffusion drafter on the target’s hidden states and drafts a block in a single forward pass.
+Recent work adds draft trees on top of DFlash to accelerate sampling  ( Ringel and Romano, 2026 ) .
+Since a one-pass discrete drafter like DFlash predicts each position independently (Eq.  1 ), follow-up works attempt to recover joint structure from this factorized output through autoregressive postprocessing  ( Cheng et al., 2026 ; Huang et al., 2026 ; Zheng and Li, 2026 ) or low-rank latent mixtures  ( Karimi et al., 2026 ) .
+These methods add search or sequential computation on top of the parallel draft, or restrict the joint to a low-rank family. 
+ Flow maps for discrete data. 
+ Alongside Flow Map Language Models  ( Lee et al., 2026 ) , Discrete Flow Maps  ( Potaptchik et al., 2026 ) and Categorical Flow Maps  ( Roos et al., 2026 ) learn flow maps that respect the geometry of the probability simplex, achieving strong few-step generation of text and other categorical data.
+Instead of standalone generation, we focus on drafting for a target model. 
+ Flow models as drafters. 
+ To our knowledge, FlashMap is the first speculative decoding drafter built on a continuous flow.
+Rather than correcting a factorized proposal after drafting, it changes the drafter’s generative model, so that dependencies between slots can be represented within the drafting pass itself.
+ FlashMap keeps DFlash’s conditioning on target hidden states and its frozen embedding and LM head, and replaces its discrete diffusion model with a continuous flow. 
+ Limitations 
+ We evaluate two target models from one family, Qwen3-4B and Qwen3-8B; other model families and larger targets are left to future work.
+Because of compute limits, all drafters, including the baselines, are trained on a 500K-sample subset of Open-PerfectBlend, so absolute acceptance lengths may differ from those of drafters trained on the full data.
+Speedups are measured at concurrency 1 on a single GPU, and batched serving is not evaluated.
+We draft blocks of 16 tokens and compare against EAGLE-3 at the same 16-token verification budget.
+Our baselines are EAGLE-3 and DFlash; we do not evaluate follow-ups that build on DFlash’s draft, such as draft trees  ( Ringel and Romano, 2026 ) , autoregressive postprocessing  ( Cheng et al., 2026 ) , or low-rank latent mixtures  ( Karimi et al., 2026 ) , although FlashMap is also compatible with draft trees (Appendix  D ).
+Our benchmarks cover English math, code, and chat at temperatures 0 and 1.
+It is also possible that our models are undertrained;
+for instance, Lee et al. 2026 train their flow language model over 1M steps and distill over 100K steps, while we train and distill only for 39K and 23K steps, respectively, due to compute constraints. 
+ Ethical Considerations 
+ Risks. 
+ FlashMap is a drafter for speculative decoding, which produces a system that preserves the sampling distribution of the target model.
+The risks of the target model, such as biased, harmful, or factually wrong outputs, therefore carry over. As with any inference speedup, lowering the cost of generation also lowers the cost of misuse at scale. 
+ Artifacts and licenses. 
+ We use only publicly available models, data, and software, and cite their creators (§ 4 ).
+Qwen3-4B and Qwen3-8B and SGLang are released under the Apache 2.0 license, Open-PerfectBlend under Apache 2.0, and DeepSpec under MIT.
+The evaluation benchmarks are used for evaluation only, consistent with their intended use and licenses (Appendix  G ). 
+ Data. 
+ We do not collect new data or use human annotators.
+Open-PerfectBlend is a public mixture of existing instruction-tuning datasets, mostly in English, covering math, code, and chat. 
+ Use of AI assistants. 
+ We used AI assistants to help write experiment code and to edit the text of this paper. All ideas, experiments, and results are the authors’ own, and the authors reviewed and verified all AI-assisted code and text. 
+ Acknowledgments 
+ J.S. is supported by the Natural Sciences and Engineering Research Council of Canada (NSERC), funding reference number 587652.
+We would like to acknowledge the support of the Simons Foundation, Schmidt Sciences, and Coefficient Giving.
+This work was supported in part by the AI2050 program at Schmidt Sciences (Grant G-25-70028).
+Additionally, computations were run at facilities supported by the Scientific Computing Core at the Flatiron Institute.
+The Flatiron Institute is a division of the Simons Foundation. 
+ References 
+ Albergo et al. (2025) 
+ M. S. Albergo, N. M. Boffi, and E. Vanden-Eijnden 
+ Stochastic interpolants: a unifying framework for flows and diffusions .
+ External Links: 2303.08797 ,
+ Link 
+ Cited by: §2 .
+ Austin et al. (2021) 
+ J. Austin, A. Odena, M. Nye, M. Bosma, H. Michalewski, D. Dohan, E. Jiang, C. Cai, M. Terry, Q. Le, and C. Sutton 
+ Program synthesis with large language models .
+ External Links: 2108.07732 ,
+ Link 
+ Cited by: §4 .
+ Bai et al. (2024) 
+ G. Bai, J. Liu, X. Bu, Y. He, J. Liu, Z. Zhou, Z. Lin, W. Su, T. Ge, B. Zheng, and W. Ouyang 
+ MT-bench-101: a fine-grained benchmark for evaluating large language models in multi-turn dialogues .
+ In Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) ,
+ pp. 7421–7454 .
+ External Links: Link ,
+ Document 
+ Cited by: §4 .
+ Boffi et al. (2025a) 
+ N. M. Boffi, M. S. Albergo, and E. Vanden-Eijnden 
+ Flow map matching with stochastic interpolants: a mathematical framework for consistency models .
+ External Links: 2406.07507 ,
+ Link 
+ Cited by: §2 ,
+ §3.2 ,
+ §3.2 .
+ Boffi et al. (2025b) 
+ N. M. Boffi, M. S. Albergo, and E. Vanden-Eijnden 
+ How to build a consistency model: learning flow maps via self-distillation .
+ External Links: 2505.18825 ,
+ Link 
+ Cited by: §2 ,
+ §3.2 ,
+ §3.2 ,
+ §3.2 .
+ Chen et al. (2023) 
+ C. Chen, S. Borgeaud, G. Irving, J. Lespiau, L. Sifre, and J. Jumper 
+ Accelerating large language model decoding with speculative sampling .
+ External Links: 2302.01318 ,
+ Link 
+ Cited by: §2 ,
+ §7 .
+ Chen et al. (2026) 
+ J. Chen, Y. Liang, and Z. Liu 
+ DFlash: Block Diffusion for Flash Speculative Decoding .
+ arXiv .
+ Note: arXiv:2602.06036 [cs.CL] 
+ External Links: Link ,
+ Document 
+ Cited by: §1 ,
+ §2 ,
+ §2 ,
+ §6.1 ,
+ §7 .
+ Chen et al. (2021) 
+ M. Chen, J. Tworek, H. Jun, Q. Yuan, H. P. de Oliveira Pinto, J. Kaplan, H. Edwards, Y. Burda, N. Joseph, G. Brockman, A. Ray, R. Puri, G. Krueger, M. Petrov, H. Khlaaf, G. Sastry, P. Mishkin, B. Chan, S. Gray, N. Ryder, M. Pavlov, A. Power, L. Kaiser, M. Bavarian, C. Winter, P. Tillet, F. P. Such, D. Cummings, M. Plappert, F. Chantzis, E. Barnes, A. Herbert-Voss, W. H. Guss, A. Nichol, A. Paino, N. Tezak, J. Tang, I. Babuschkin, S. Balaji, S. Jain, W. Saunders, C. Hesse, A. N. Carr, J. Leike, J. Achiam, V. Misra, E. Morikawa, A. Radford, M. Knight, M. Brundage, M. Murati, K. Mayer, P. Welinder, B. McGrew, D. Amodei, S. McCandlish, I. Sutskever, and W. Zaremba 
+ Evaluating large language models trained on code .
+ External Links: 2107.03374 
+ Cited by: §4 .
+ Cheng et al. (2026) 
+ X. Cheng, X. Yu, C. Shao, J. Li, Y. Xiong, Y. Qian, J. Zhu, S. Ma, X. Zhang, J. Ye, Q. Chen, C. Deng, J. Yu, D. Dai, Z. Zhang, Y. Wei, Y. Tan, W. Yang, R. Xu, Y. Wu, Z. Xu, X. Wang, M. Chen, R. Tian, X. Bi, Z. Hao, S. Chen, H. Cao, W. Zhang, A. Xu, H. Zhang, D. Zhao, and W. Liang 
+ DSpark: Confidence-Scheduled Speculative Decoding with Semi-Autoregressive Generation .
+ arXiv .
+ Note: arXiv:2607.05147 [cs.AI] 
+ External Links: Link ,
+ Document 
+ Cited by: §1 ,
+ §6.1 ,
+ §7 ,
+ Limitations .
+ Cobbe et al. (2021) 
+ K. Cobbe, V. Kosaraju, M. Bavarian, M. Chen, H. Jun, L. Kaiser, M. Plappert, J. Tworek, J. Hilton, R. Nakano, C. Hesse, and J. Schulman 
+ Training verifiers to solve math word problems .
+ External Links: 2110.14168 ,
+ Link 
+ Cited by: §4 .
+ Gu et al. (2018) 
+ J. Gu, J. Bradbury, C. Xiong, V. O. K. Li, and R. Socher 
+ Non-autoregressive neural machine translation .
+ External Links: 1711.02281 ,
+ Link 
+ Cited by: §2 .
+ Hendrycks et al. (2021) 
+ D. Hendrycks, C. Burns, S. Kadavath, A. Arora, S. Basart, E. Tang, D. Song, and J. Steinhardt 
+ Measuring mathematical problem solving with the math dataset .
+ External Links: 2103.03874 ,
+ Link 
+ Cited by: §4 .
+ Huang et al. (2026) 
+ J. Huang, Y. Zhang, Q. Zhang, H. Lin, H. Xu, and L. Zhang 
+ Domino: decoupling causal modeling from autoregressive drafting in speculative decoding .
+ External Links: 2605.29707 ,
+ Link 
+ Cited by: §7 .
+ Jain et al. (2024) 
+ N. Jain, K. Han, A. Gu, W. Li, F. Yan, T. Zhang, S. Wang, A. Solar-Lezama, K. Sen, and I. Stoica 
+ LiveCodeBench: holistic and contamination free evaluation of large language models for code .
+ External Links: 2403.07974 ,
+ Link 
+ Cited by: §4 .
+ Karimi et al. (2026) 
+ A. Karimi, C. Gao, and N. Hassanpour 
+ DBLAST: Dependent Block Drafting for Stochastic Speculative Decoding .
+ ( en ).
+ External Links: Link 
+ Cited by: §7 ,
+ Limitations .
+ Lee et al. (2026) 
+ C. Lee, J. Yoo, M. Agarwal, S. Shah, J. Huang, A. Raghunathan, S. Hong, N. M. Boffi, and J. Kim 
+ Flow Map Language Models: One-step Language Modeling via Continuous Denoising .
+ arXiv .
+ Note: arXiv:2602.16813 [cs.CL] 
+ External Links: Link ,
+ Document 
+ Cited by: §1 ,
+ §2 ,
+ §2 ,
+ §2 ,
+ §2 ,
+ §3.1 ,
+ §3.2 ,
+ §7 ,
+ Limitations .
+ Leviathan et al. (2023) 
+ Y. Leviathan, M. Kalman, and Y. Matias 
+ Fast inference from transformers via speculative decoding .
+ External Links: 2211.17192 ,
+ Link 
+ Cited by: §2 ,
+ §7 .
+ Li et al. (2026) 
+ G. Li, Z. Fu, M. Fang, Q. Zhao, M. Tang, C. Yuan, and J. Wang 
+ DiffuSpec: Unlocking Diffusion Language Models for Speculative Decoding .
+ In Findings of the Association for Computational Linguistics: ACL 2026 , M. Liakata, V. P. Moreira, J. Zhang, and D. Jurgens (Eds.) ,
+ San Diego, California, United States , pp. 20896–20910 .
+ External Links: ISBN 979-8-89176-395-1 ,
+ Link ,
+ Document 
+ Cited by: §7 .
+ Li and He (2026) 
+ T. Li and K. He 
+ Back to basics: let denoising generative models denoise .
+ External Links: 2511.13720 ,
+ Link 
+ Cited by: §2 .
+ Li et al. (2024) 
+ T. Li, W. Chiang, E. Frick, L. Dunlap, T. Wu, B. Zhu, J. E. Gonzalez, and I. Stoica 
+ From crowdsourced data to high-quality benchmarks: arena-hard and benchbuilder pipeline .
+ External Links: 2406.11939 ,
+ Link 
+ Cited by: §4 .
+ Li et al. (2023) 
+ X. Li, T. Zhang, Y. Dubois, R. Taori, I. Gulrajani, C. Guestrin, P. Liang, and T. B. Hashimoto 
+ AlpacaEval: an automatic evaluator of instruction-following models .
+ GitHub .
+ Note: https://github.com/tatsu-lab/alpaca_eval 
+ Cited by: §4 .
+ Li et al. (2025) 
+ Y. Li, F. Wei, C. Zhang, and H. Zhang 
+ EAGLE-3: Scaling up Inference Acceleration of Large Language Models via Training-Time Test .
+ ( en ).
+ External Links: Link 
+ Cited by: §1 ,
+ §7 .
+ Lipman et al. (2023) 
+ Y. Lipman, R. T. Q. Chen, H. Ben-Hamu, M. Nickel, and M. Le 
+ Flow matching for generative modeling .
+ External Links: 2210.02747 ,
+ Link 
+ Cited by: §2 .
+ Liu et al. (2022) 
+ X. Liu, C. Gong, and Q. Liu 
+ Flow straight and fast: learning to generate and transfer data with rectified flow .
+ External Links: 2209.03003 ,
+ Link 
+ Cited by: §2 .
+ Loshchilov and Hutter (2019) 
+ I. Loshchilov and F. Hutter 
+ Decoupled weight decay regularization .
+ External Links: 1711.05101 ,
+ Link 
+ Cited by: §4 .
+ Peebles and Xie (2023) 
+ W. Peebles and S. Xie 
+ Scalable diffusion models with transformers .
+ External Links: 2212.09748 ,
+ Link 
+ Cited by: §3.1 ,
+ §4 .
+ Potaptchik et al. (2026) 
+ P. Potaptchik, J. Yim, A. Saravanan, P. Holderrieth, E. Vanden-Eijnden, and M. S. Albergo 
+ Discrete Flow Maps .
+ ( en ).
+ External Links: Link 
+ Cited by: §6.3 ,
+ §7 .
+ Ringel and Romano (2026) 
+ L. Ringel and Y. Romano 
+ Accelerating Speculative Decoding with Block Diffusion Draft Trees .
+ arXiv .
+ Note: arXiv:2604.12989 [cs.CL] 
+ External Links: Link ,
+ Document 
+ Cited by: Appendix D ,
+ §7 ,
+ Limitations .
+ Roos et al. (2026) 
+ D. Roos, O. Davis, F. Eijkelboom, M. Bronstein, M. Welling, İ. İ. Ceylan, L. Ambrogioni, and J. van de Meent 
+ Categorical Flow Maps .
+ arXiv ( en ).
+ Note: Version Number: 1 
+ External Links: Link ,
+ Document 
+ Cited by: §7 .
+ Sandler et al. (2026) 
+ J. Sandler, J. Christopher, T. Hartvigsen, and F. Fioretto 
+ SpecDiff-2: Scaling Diffusion Drafter Alignment For Faster Speculative Decoding .
+ Proceedings of Machine Learning and Systems 8 , pp. 1128–1147 ( en ).
+ External Links: Link 
+ Cited by: §7 .
+ Tang and Wang (2026) 
+ S. Tang and S. Wang 
+ Discrete beckmann transport models for one-step language modeling and reasoning .
+ External Links: 2609.15903 ,
+ Link 
+ Cited by: §6.3 .
+ Xu et al. (2024) 
+ T. Xu, E. Helenowski, K. A. Sankararaman, D. Jin, K. Peng, E. Han, S. Nie, C. Zhu, H. Zhang, W. Zhou, Z. Zeng, Y. He, K. Mandyam, A. Talabzadeh, M. Khabsa, G. Cohen, Y. Tian, H. Ma, S. Wang, and H. Fang 
+ The perfect blend: redefining rlhf with mixture of judges .
+ External Links: 2409.20370 ,
+ Link 
+ Cited by: §4 .
+ Yang et al. (2025) 
+ A. Yang, A. Li, B. Yang, B. Zhang, B. Hui, B. Zheng, B. Yu, C. Gao, C. Huang, C. Lv, C. Zheng, D. Liu, F. Zhou, F. Huang, F. Hu, H. Ge, H. Wei, H. Lin, J. Tang, J. Yang, J. Tu, J. Zhang, J. Yang, J. Yang, J. Zhou, J. Zhou, J. Lin, K. Dang, K. Bao, K. Yang, L. Yu, L. Deng, M. Li, M. Xue, M. Li, P. Zhang, P. Wang, Q. Zhu, R. Men, R. Gao, S. Liu, S. Luo, T. Li, T. Tang, W. Yin, X. Ren, X. Wang, X. Zhang, X. Ren, Y. Fan, Y. Su, Y. Zhang, Y. Zhang, Y. Wan, Y. Liu, Z. Wang, Z. Cui, Z. Zhang, Z. Zhou, and Z. Qiu 
+ Qwen3 technical report .
+ External Links: 2505.09388 ,
+ Link 
+ Cited by: §4 .
+ Zhang and Math-AI (2025) 
+ Y. Zhang and T. Math-AI 
+ American invitational mathematics examination (aime) 2025 .
+ Cited by: §4 .
+ Zheng and Li (2026) 
+ H. Zheng and P. Li 
+ DeLS-spec: decoupled long-short contexts for parallel speculative drafting .
+ External Links: 2607.07409 ,
+ Link 
+ Cited by: §7 .
+ Appendix A Input featurization 
+ A frozen input projection constrains how the state can enter the network.
+The natural choice, the linear read-out x k ​ E x^{k}E of the state at each slot, sums the embeddings of all tokens, each weighted by its noisy coordinate.
+The clean token contributes only one term and every other token contributes noise, so the signal is drowned out.
+For the flow model, we therefore embed the posterior over the clean token given the state, which provides a better signal.
+Under a uniform prior, the posterior over classes given a Gaussian-noised one-hot is 
+ π t ​ ( x k ) = softmax ⁡ ( t ​ x k ( 1 − t ) 2 ) . \pi_{t}(x^{k})=\mathrm{softmax}\left(\frac{t\,x^{k}}{(1-t)^{2}}\right). 
+ (8) 
+ The network input h k = RMSNorm ⁡ ( π t ​ ( x k ) ​ E ) h^{k}=\mathrm{RMSNorm}(\pi_{t}(x^{k})\,E) is then dominated by the embeddings of the few tokens consistent with the state.
+We find, in small-scale tests, that this improves the performance of the flow teacher model as compared to linear featurization. 
+ At s = 0 s=0 , however, this posterior input π 0 ​ ( x k ) \pi_{0}(x^{k}) is uniform for every x k x^{k} .
+For a flow map model that will be evaluated with 1 NFE (i.e., for ( s , t ) = ( 0 , 1 ) (s,t)=(0,1) ), we require that the model has different random noise to anchor its joint prediction.
+That is, in the case where we only feed in the posterior featurization to the flow map model and evaluate it at 1 NFE, the flow map model will learn the per-slot marginals and revert back to a deterministic factorized drafter.
+The student therefore also reads the raw state through a linear path, 
+ h k = π s ​ ( x k ) ​ E + ( t − s ) ​ x k ​ E , h^{k}=\pi_{s}(x^{k})\,E+(t-s)\,x^{k}E, 
+ (9) 
+ where the t − s t-s term ensures that the student matches the teacher on the diagonal, and each term is normalized with RMSNorm. 
+ Appendix B Fast multi-step drafting 
+ Drafting with more than one jump embeds a vocabulary-sized state at every slot: x 0 ​ E x_{0}E at the first jump, and π u ​ ( x u ) ​ E \pi_{u}(x_{u})\,E and x u ​ E x_{u}E at the second, each a full pass over E E .
+With two jumps at times 0 < u < 1 0<u<1 , the state entering the second jump is x u = ( 1 − u ) ​ x 0 + u ​ δ ^ x_{u}=(1-u)\,x_{0}+u\,\hat{\delta} , where δ ^ = δ 0 , u ϕ ​ ( x 0 , c ) \hat{\delta}=\delta^{\phi}_{0,u}(x_{0};c) , so its posterior is π u ​ ( x u k ) ∝ exp ⁡ ( α ​ x 0 k + α 2 ​ δ ^ k ) \pi_{u}(x_{u}^{k})\propto\exp(\alpha x_{0}^{k}+\alpha^{2}\hat{\delta}^{k}) with α = u / ( 1 − u ) \alpha=u/(1-u) .
+Since δ ^ k \hat{\delta}^{k} is concentrated on a few tokens, we split each token’s weight into a noise-only part and a correction on the top tokens T k T^{k} of δ ^ k \hat{\delta}^{k} : 
+ π u ​ ( x u k ) ​ E ≈ W ⁡ ( x 0 k ) + ∑ v ∈ T k r v ​ E v S ⁡ ( x 0 k ) + ∑ v ∈ T k r v , W ( z ) = ∑ v ∈ 𝒱 e α ​ z v E v , S ( z ) = ∑ v ∈ 𝒱 e α ​ z v , \begin{gathered}\pi_{u}(x_{u}^{k})\,E\approx\frac{W(x_{0}^{k})+\sum_{v\in T^{k}}r_{v}E_{v}}{S(x_{0}^{k})+\sum_{v\in T^{k}}r_{v}},\\
+W(z)=\sum_{v\in\mathcal{V}}e^{\alpha z_{v}}E_{v},\qquad S(z)=\sum_{v\in\mathcal{V}}e^{\alpha z_{v}},\end{gathered} 
+ (10) 
+ where r v = e α ​ x 0 , v k ​ ( e α 2 ​ δ ^ v k − 1 ) r_{v}=e^{\alpha x^{k}_{0,v}}\big(e^{\alpha^{2}\hat{\delta}^{k}_{v}}-1\big) ; likewise x u k ​ E ≈ ( 1 − u ) ​ x 0 k ​ E + u ​ ∑ v ∈ T k δ ^ v k ​ E v x_{u}^{k}E\approx(1-u)\,x_{0}^{k}E+u\sum_{v\in T^{k}}\hat{\delta}^{k}_{v}E_{v} .
+The parts over the whole vocabulary, x 0 ​ E x_{0}E , W W , and S S , depend only on the noise and on α \alpha , which we can precompute for a bank of 8,192 noise draws.
+At drafting time each slot selects a random bank entry, so x 0 ​ E x_{0}E , W W , and S S are already precomputed, and we only require computing the correction.
+The correction needs the noise on T k T^{k} , which we redraw; this perturbs only | T k | |T^{k}| of the | 𝒱 | |\mathcal{V}| terms in W W and S S .
+With | T k | = 16 |T^{k}|=16 , the second jump reads 16 rows of E E per slot instead of all of them, reducing the added cost of the second jump over one-jump drafting by about 70% on Qwen3-8B, while acceptance stays essentially unchanged as compared to the two-step draft without this optimization. 
+ Appendix C Speedup and acceptance length on Qwen3-4B 
+ Table  3 gives speedup and acceptance length on Qwen3-4B.
+These results are analogous to the ones presented in Figure  1 (c) and Table 1 . 
+ Temp. 
+ Method 
+ Math 
+ Code 
+ Chat 
+ GSM8K 
+ MATH 
+ AIME25 
+ MBPP 
+ HumanEval 
+ LCB 
+ MT-Bench 
+ Alpaca 
+ Arena-Hard 
+ Speedup ( × \times ) 
+ T = 0 T=0 
+ EAGLE-3 (16) 
+ 2.66 
+ 2.64 
+ 2.47 
+ 2.20 
+ 2.33 
+ 2.44 
+ 1.49 
+ 1.37 
+ 1.64 
+ DFlash 
+ 5.18 
+ 5.23 
+ 4.56 
+ 3.72 
+ 4.00 
+ 4.27 
+ 2.43 
+ 2.28 
+ 2.58 
+ FlashMap (1 step) 
+ 5.14 
+ 5.02 
+ 4.47 
+ 3.71 
+ 4.04 
+ 4.28 
+ 2.46 
+ 2.28 
+ 2.66 
+ FlashMap (2 steps) 
+ 4.75 
+ 4.57 
+ 4.00 
+ 3.42 
+ 3.76 
+ 3.87 
+ 2.16 
+ 2.00 
+ 2.34 
+ T = 1 T=1 
+ EAGLE-3 (16) 
+ 2.57 
+ 2.31 
+ 1.94 
+ 2.04 
+ 2.21 
+ 2.16 
+ 1.37 
+ 1.29 
+ 1.41 
+ DFlash 
+ 4.67 
+ 3.96 
+ 3.29 
+ 3.26 
+ 3.67 
+ 3.25 
+ 2.16 
+ 2.15 
+ 2.02 
+ FlashMap (1 step) 
+ 4.59 
+ 3.81 
+ 3.12 
+ 3.26 
+ 3.69 
+ 3.24 
+ 2.25 
+ 2.04 
+ 2.17 
+ FlashMap (2 steps) 
+ 4.34 
+ 3.56 
+ 2.79 
+ 3.02 
+ 3.50 
+ 2.91 
+ 1.94 
+ 1.83 
+ 1.89 
+ Acceptance length γ \gamma 
+ T = 0 T=0 
+ EAGLE-3 (16) 
+ 6.34 
+ 6.19 
+ 5.78 
+ 5.22 
+ 5.51 
+ 5.82 
+ 3.52 
+ 3.23 
+ 3.84 
+ DFlash 
+ 7.18 
+ 7.13 
+ 6.20 
+ 5.11 
+ 5.47 
+ 5.96 
+ 3.30 
+ 3.10 
+ 3.50 
+ FlashMap (1 step) 
+ 7.24 
+ 6.97 
+ 6.20 
+ 5.18 
+ 5.62 
+ 6.09 
+ 3.40 
+ 3.17 
+ 3.67 
+ FlashMap (2 steps) 
+ 7.79 
+ 7.39 
+ 6.47 
+ 5.56 
+ 6.10 
+ 6.40 
+ 3.49 
+ 3.23 
+ 3.77 
+ T = 1 T=1 
+ EAGLE-3 (16) 
+ 6.06 
+ 5.37 
+ 4.51 
+ 4.80 
+ 5.18 
+ 5.13 
+ 3.21 
+ 3.02 
+ 3.26 
+ DFlash 
+ 6.46 
+ 5.40 
+ 4.46 
+ 4.47 
+ 5.02 
+ 4.51 
+ 2.95 
+ 2.94 
+ 2.75 
+ FlashMap (1 step) 
+ 6.45 
+ 5.28 
+ 4.33 
+ 4.55 
+ 5.12 
+ 4.59 
+ 3.12 
+ 2.82 
+ 2.99 
+ FlashMap (2 steps) 
+ 7.09 
+ 5.74 
+ 4.50 
+ 4.89 
+ 5.66 
+ 4.79 
+ 3.13 
+ 2.95 
+ 3.05 
+ Table 3: Speedup ( × \times ) over autoregressive decoding with the target model (top) and acceptance length γ \gamma (bottom) on Qwen3-4B.
+For each metric, temperature and benchmark, bold marks the best result and underline the second best. 
+ Appendix D Multi-Sample Drafting with Tree Verification 
+ Because FlashMap drafts from noise, it can draft several blocks from independent noise draws in a single batched forward pass, merge them into a trie, and verify the trie as a tree in one target pass.
+This is similar to what is done in DDTree  ( Ringel and Romano, 2026 ) , but here every branch comes from a separate noise draw.
+We ablate FlashMap ’s performance at various sample sizes and tree verification sizes and report the results for Qwen3-8B at T = 0 T=0 in
+Table  4 .
+With four samples merged into a 16-token tree—the same verification budget as a single sample—speedup rises on every benchmark, by 4–24% (11% on average) at one step and by 6–15% (11% on average) at two steps. 
+ Steps 
+ Samples 
+ Tree size 
+ Math 
+ Code 
+ Chat 
+ GSM8K 
+ MATH 
+ AIME25 
+ MBPP 
+ HumanEval 
+ LCB 
+ MT-Bench 
+ Alpaca 
+ Arena-Hard 
+ Speedup ( × \times ) 
+ 1 
+ 1 
+ 16 
+ 6.34 
+ 5.57 
+ 4.90 
+ 3.98 
+ 4.47 
+ 4.71 
+ 2.62 
+ 2.41 
+ 2.48 
+ 2 
+ 16 
+ 6.62 
+ 6.00 
+ 5.28 
+ 4.16 
+ 4.73 
+ 4.92 
+ 2.77 
+ 2.86 
+ 2.49 
+ 4 
+ 16 
+ 6.84 
+ 6.07 
+ 5.29 
+ 4.25 
+ 4.78 
+ 5.73 
+ 2.85 
+ 2.98 
+ 2.58 
+ 4 
+ 64 
+ 6.49 
+ 5.62 
+ 4.85 
+ 4.29 
+ 4.46 
+ 4.87 
+ 2.59 
+ 2.75 
+ 2.21 
+ 2 
+ 1 
+ 16 
+ 6.25 
+ 5.52 
+ 4.96 
+ 4.01 
+ 4.36 
+ 5.03 
+ 2.52 
+ 2.59 
+ 2.20 
+ 2 
+ 16 
+ 6.51 
+ 5.77 
+ 5.12 
+ 4.20 
+ 4.63 
+ 5.07 
+ 2.74 
+ 2.75 
+ 2.49 
+ 4 
+ 16 
+ 6.88 
+ 6.31 
+ 5.36 
+ 4.39 
+ 4.92 
+ 5.33 
+ 2.89 
+ 2.97 
+ 2.42 
+ 4 
+ 64 
+ 6.61 
+ 5.79 
+ 5.06 
+ 4.22 
+ 4.71 
+ 5.10 
+ 2.72 
+ 2.80 
+ 2.16 
+ Acceptance length γ \gamma 
+ 1 
+ 1 
+ 16 
+ 7.97 
+ 6.84 
+ 6.01 
+ 4.90 
+ 5.50 
+ 6.05 
+ 3.22 
+ 2.96 
+ 3.04 
+ 2 
+ 16 
+ 8.42 
+ 7.44 
+ 6.53 
+ 5.16 
+ 5.85 
+ 6.27 
+ 3.42 
+ 3.54 
+ 3.08 
+ 4 
+ 16 
+ 8.66 
+ 7.53 
+ 6.55 
+ 5.28 
+ 5.92 
+ 7.26 
+ 3.52 
+ 3.70 
+ 3.15 
+ 4 
+ 64 
+ 9.06 
+ 7.84 
+ 6.84 
+ 5.89 
+ 6.15 
+ 7.07 
+ 3.56 
+ 3.78 
+ 3.11 
+ 2 
+ 1 
+ 16 
+ 8.49 
+ 7.33 
+ 6.61 
+ 5.35 
+ 5.79 
+ 6.98 
+ 3.34 
+ 3.45 
+ 2.93 
+ 2 
+ 16 
+ 9.00 
+ 7.77 
+ 6.91 
+ 5.66 
+ 6.25 
+ 7.15 
+ 3.67 
+ 3.72 
+ 3.35 
+ 4 
+ 16 
+ 9.51 
+ 8.54 
+ 7.26 
+ 5.96 
+ 6.65 
+ 7.54 
+ 3.89 
+ 4.04 
+ 3.26 
+ 4 
+ 64 
+ 9.95 
+ 8.68 
+ 7.69 
+ 6.25 
+ 7.00 
+ 7.99 
+ 4.04 
+ 4.15 
+ 3.28 
+ Table 4: Multi-sample drafting with FlashMap on Qwen3-8B at T = 0 T=0 : speedup ( × \times ) over the target and acceptance length γ \gamma for various numbers of steps, sample counts, and tree verification sizes.
+For each metric and benchmark, bold marks the best result.
+Calculated on one H100 SXM with 32 prompts per benchmark (30 for AIME25). 
+ Appendix E Additional conditional acceptance results 
+ We show conditional acceptance curves for Qwen3-8B at T = 1 T=1 in Figure 4 .
+This is the counterpart to the T = 0 T=0 results in Figure 3 .
+Similarly, we show conditional acceptance curves for Qwen3-4B at both T = 0 T=0 and T = 1 T=1 in Figure 5 . 
+ Figure 4: Same as Figure 3 but at T = 1 T=1 . 
+ Figure 5: Same as Figure 3 , but for Qwen3-4B at T = 0 T=0 (top row) and T = 1 T=1 (bottom row). 
+ Appendix F Shuffle test on Qwen3-4B 
+ Table 5 shows the results of the shuffle test, as described in Section 6.2 , with Qwen3-4B as the target model.
+These results are analogous to the ones in Table 2 , and the conclusions are largely the same. 
+ Math 
+ Code 
+ Chat 
+ Drafter 
+ Shared 
+ Shuffled 
+ Δ \Delta 
+ Shared 
+ Shuffled 
+ Δ \Delta 
+ Shared 
+ Shuffled 
+ Δ \Delta 
+ DFlash 
+ 7.44 
+ 7.44 
+ 0.00 
+ 5.74 
+ 5.74 
+ 0.00 
+ 2.88 
+ 2.88 
+ 0.00 
+ Flow (1 step) 
+ 6.74 
+ 6.74 
+ 0.00 
+ 5.20 
+ 5.20 
+ 0.00 
+ 2.78 
+ 2.78 
+ 0.00 
+ Flow (2 steps) 
+ 7.70 
+ 7.25 
+ 0.46 
+ 6.12 
+ 5.79 
+ 0.34 
+ 3.04 
+ 2.88 
+ 0.16 
+ Flow (16 steps) 
+ 8.05 
+ 7.22 
+ 0.83 
+ 6.47 
+ 5.84 
+ 0.62 
+ 3.17 
+ 2.88 
+ 0.29 
+ FlashMap (1 step) 
+ 7.07 
+ 6.71 
+ 0.36 
+ 5.60 
+ 5.45 
+ 0.15 
+ 2.86 
+ 2.77 
+ 0.08 
+ FlashMap (2 steps) 
+ 7.74 
+ 6.87 
+ 0.87 
+ 6.25 
+ 5.72 
+ 0.53 
+ 3.08 
+ 2.82 
+ 0.26 
+ Table 5: Same as Table 2 but for Qwen3-4B. 
+ Appendix G Implementation and compute details 
+ Model sizes. 
+ On Qwen3-8B, FlashMap has 500M trainable parameters, DFlash has 1049M and EAGLE-3 has 302M.
+On Qwen3-4B, FlashMap has 475M trainable parameters, DFlash has 537M, and EAGLE-3 has 149M. 
+ Compute. 
+ We train on 4 NVIDIA H200 SXM5 nodes with 8 GPUs each (total of 32 GPUs).
+Training one FlashMap flow teacher took ∼ 25 {\sim}25 hours for Qwen3-8B and ∼ 17 {\sim}17 hours for Qwen3-4B.
+Distillation into a flow map took ∼ 9 {\sim}9 hours.
+The retrained DFlash took ∼ 27 {\sim}27 hours for Qwen3-8B and ∼ 18 {\sim}18 hours for Qwen3-4B.
+The retrained EAGLE-3 took ∼ 21 {\sim}21 hours for Qwen3-8B and ∼ 16 {\sim}16 hours for Qwen3-4B.
+Across all target models, drafters, and ablations, the total is about 4600 GPU hours.
+Speedups are measured on one NVIDIA H200 NVL GPU (one H100 SXM for Table  4 ). 
+ Software. 
+ We implement all drafters in DeepSpec 005e03b with PyTorch and evaluate with SGLang 0.5.20 at concurrency 1, with 2048 max new tokens and thinking mode off. 
+ Evaluation data. 
+ Licenses: GSM8K, MATH, LiveCodeBench and HumanEval (MIT); AIME25, MBPP, MT-Bench, AlpacaEval, and Arena-Hard (Apache 2.0). 
+ Variance. 
+ All speedups and acceptance lengths are from a single run per configuration. At T = 0 T=0 , re-running a configuration on a different GPU changed acceptance length by at most about 1%. Conditional acceptance curves show 95% Wilson intervals. 
