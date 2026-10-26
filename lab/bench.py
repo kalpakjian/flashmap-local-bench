@@ -149,10 +149,22 @@ def fetch_metrics(port=PORT):
 
 
 def metric_total(metrics, key_part):
-    """把符合 key_part 的 counter 加總（Prometheus 可能有多個 label 組合）。"""
+    """把指定 counter family 的數值加總（Prometheus 可能有多個 label 組合）。
+
+    Prometheus 對每個 counter 都會產生兩條 series：
+      vllm:<name>_total    真正的累計值
+      vllm:<name>_created  該 series 的建立時間戳（單位是秒，不是計數）
+    用 substring 比對會同時誤抓：
+      1. `_created` 的時間戳（數值約 1.79e9，直接把總和灌爆）
+      2. 兄弟 family，例如 spec_decode_num_accepted_tokens_per_pos_total
+    因此這裡改為「去掉 label 之後 family 名稱完全相等」的比對。
+    """
     total, hit = 0.0, False
     for k, v in metrics.items():
-        if key_part in k:
+        family = k.split("{", 1)[0]
+        if family.startswith("vllm:"):
+            family = family[len("vllm:"):]
+        if family == key_part or family == key_part + "_total":
             total += v
             hit = True
     return total if hit else None
@@ -181,6 +193,7 @@ def run_suite(port, prompts, max_tokens, tag):
             "completion_tokens": (usage or {}).get("completion_tokens"),
             "prompt_tokens": (usage or {}).get("prompt_tokens"),
             "output_head": text[:120],
+            "output_text": text,
         }
         records.append(rec)
         print(f"  [{tag}][{i+1:2d}/{len(prompts)}] {category:6s} "
@@ -208,7 +221,72 @@ def summarize(records):
                 statistics.mean([(r["completion_tokens"] or 0) / r["total_sec"] for r in rs]), 2),
         }
     return out
-def build_report(env, base_sum, fm_sum, fm_metrics, out_md):
+def spec_decode_stats(metrics):
+    """從 Prometheus counter 算出真正的 spec-decode 統計量。
+
+    vLLM v1 的語義（見 vllm/v1/spec_decode/metrics.py）：
+      num_drafts          每個 decode step 的「草稿輪次」數（+1 per step）
+      num_draft_tokens    總共草擬出多少個 token
+      num_accepted_tokens 總共被接受多少個草稿 token
+
+    因此：
+      γ（每個 target forward 實際送出的 token 數）= accepted/drafts + 1
+          （+1 是 target 自己 bonus 產生的那個 token）
+      草稿接受率（被接受的草稿 token 佔草稿 token 的比例）= accepted/draft_tokens
+    """
+    if not metrics or "error" in metrics:
+        return {}
+    accepted = metric_total(metrics, "spec_decode_num_accepted_tokens")
+    drafts = metric_total(metrics, "spec_decode_num_drafts")
+    draft_tokens = metric_total(metrics, "spec_decode_num_draft_tokens")
+    out = {}
+    if accepted is not None and drafts:
+        out["accepted_tokens"] = accepted
+        out["draft_steps"] = drafts
+        out["gamma_tokens_per_step"] = round(accepted / drafts + 1, 3)
+    if accepted is not None and draft_tokens:
+        out["draft_tokens"] = draft_tokens
+        out["acceptance_fraction"] = round(accepted / draft_tokens, 4)
+    if draft_tokens is not None and drafts:
+        out["draft_tokens_per_step"] = round(draft_tokens / drafts, 3)
+    return out
+
+
+def compare_outputs(base_records, fm_records):
+    """伺服器端無損性：同一台 vLLM、同一組 prompt、temperature=0，比對兩次執行的輸出。
+
+    這是「使用者真正在意的」那一層：FlashMap 開起來之後，回答有沒有變。
+    比對兩層：
+      identical_text  完整字串相同（最嚴格）
+      identical_head  前 120 字相同（容忍最後一次驗證 pass 衝過 max_tokens 造成的一兩個尾字差異）
+    """
+    base = {r["id"]: r for r in base_records}
+    fm = {r["id"]: r for r in fm_records}
+    rows = []
+    for i in sorted(base):
+        b, f = base[i], fm[i]
+        bt, ft = b.get("output_text") or b.get("output_head", ""), f.get("output_text") or f.get("output_head", "")
+        hb, hf = b.get("output_head", ""), f.get("output_head", "")
+        n_min = min(len(bt), len(ft))
+        first = next((k for k in range(n_min) if bt[k] != ft[k]), None)
+        rows.append({
+            "id": i, "category": b["category"],
+            "identical_text": bt == ft,
+            "identical_head": hb == hf,
+            "first_char_diff": first,
+            "base_tokens": b.get("completion_tokens"),
+            "fm_tokens": f.get("completion_tokens"),
+            "token_delta": (f.get("completion_tokens") or 0) - (b.get("completion_tokens") or 0),
+        })
+    return {
+        "n": len(rows),
+        "identical_text": sum(1 for r in rows if r["identical_text"]),
+        "identical_head": sum(1 for r in rows if r["identical_head"]),
+        "rows": rows,
+    }
+
+
+def build_report(env, base_sum, fm_sum, fm_metrics, out_md, lossless=None):
     """產生人可讀的 markdown 報告（含與論文數字的對照）。"""
 
     def row(label, b, f):
@@ -218,12 +296,7 @@ def build_report(env, base_sum, fm_sum, fm_metrics, out_md):
         return (f"| {label} | {(b or {}).get('completion_tokens', '-')} | "
                 f"{bt if bt else '-'} | {ft if ft else '-'} | {sp if sp else '-'} |")
 
-    acc = None
-    if fm_metrics and "error" not in fm_metrics:
-        accepted = metric_total(fm_metrics, "spec_decode_num_accepted_tokens")
-        drafted = metric_total(fm_metrics, "spec_decode_num_drafts")
-        if accepted and drafted:
-            acc = round(accepted / drafted, 3)
+    sd = spec_decode_stats(fm_metrics)
 
     lines = [
         "# FlashMap 本機實驗報告",
@@ -248,8 +321,42 @@ def build_report(env, base_sum, fm_sum, fm_metrics, out_md):
         lines.append(row(cat, base_sum.get(cat), fm_sum.get(cat)))
     lines += [
         "",
-        (f"- FlashMap server 的 spec-decode counter 推算接受率 ≈ **{acc}**" if acc
+        ("- Spec-decode 統計（由 `/metrics` 的 `_total` counter 計算）：" if sd
          else "- （未能從 /metrics 取得 spec-decode counter）"),
+    ]
+    if sd:
+        lines += [
+            f"  - γ（每個 target forward 送出的 token 數）= **{sd['gamma_tokens_per_step']}**"
+            f"　（accepted {sd['accepted_tokens']:.0f} / steps {sd['draft_steps']:.0f} + 1 bonus）",
+            f"  - 草稿接受率（accepted / drafted tokens）= **{sd['acceptance_fraction'] * 100:.2f}%**"
+            f"　（每步草擬 {sd['draft_tokens_per_step']:.1f} 個 token）",
+        ]
+    if lossless:
+        lines += [
+            "",
+            "## 伺服器端輸出比對（無損性，temperature=0）",
+            "",
+            f"- 完整輸出字串相同：**{lossless['identical_text']}/{lossless['n']}**",
+            f"- 前 120 字相同：**{lossless['identical_head']}/{lossless['n']}**",
+            "",
+            "| id | 類別 | 基準 tokens | FlashMap tokens | 差異 | 前120字相同 | 完整相同 |",
+            "|---|---|---|---|---|---|---|",
+        ]
+        for r in lossless["rows"]:
+            lines.append(
+                f"| {r['id']} | {r['category']} | {r['base_tokens']} | {r['fm_tokens']} | "
+                f"{r['token_delta']:+d} | {'✔' if r['identical_head'] else '✘'} | "
+                f"{'✔' if r['identical_text'] else '✘'} |")
+        lines += [
+            "",
+            "  `+1` 的 token 差異來自最後一次驗證 pass 會衝過 `max_tokens`"
+            "（上游文件明載），不是內容不同。",
+            "  temperature=0 下兩次執行理論上應完全一致；在 bf16 下，target 的「逐字解碼」與"
+            "「區塊驗證」前向形狀不同，",
+            "  在 top-2 logit 差距小於 bf16 解析度時 argmax 會翻轉 —— "
+            "詳見 `pass6_block_shape.py` 與 `FINDINGS.md`。",
+        ]
+    lines += [
         "",
         "## 與論文對照（FlashMap 論文 Table 1 / Figure 1(c)，Qwen3-8B，T=0，1 step）",
         "",
@@ -322,9 +429,13 @@ def main():
 
     results.update({"baseline": {"records": base_records, "summary": base_sum, "metrics": base_metrics},
                     "flashmap": {"records": fm_records, "summary": fm_sum, "metrics": fm_metrics}})
+    lossless = compare_outputs(base_records, fm_records)
+    results["lossless"] = lossless
+    print(f"[lossless] identical_text={lossless['identical_text']}/{lossless['n']} "
+          f"identical_head={lossless['identical_head']}/{lossless['n']}", flush=True)
     Path(args.out_json).write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"\n[done] 原始結果 → {args.out_json}")
-    print(build_report(env, base_sum, fm_sum, fm_metrics, args.out_md))
+    print(build_report(env, base_sum, fm_sum, fm_metrics, args.out_md, lossless))
     print(f"[done] 報告 → {args.out_md}")
 
 

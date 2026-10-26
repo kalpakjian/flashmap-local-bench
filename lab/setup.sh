@@ -121,7 +121,9 @@ cat <<EOF
   cd $WORKDIR
   source .venv/bin/activate
   # 執行完整實驗（接受長度 + 無損性 + 端到端 tok/s）
-  python $WORKDIR/bench.py --workdir $WORKDIR
+  python $WORKDIR/bench.py
+  # 嚴格「無損性」檢查請用 fp32（bf16 的近似並列會造成假性 MISMATCH）
+  python $WORKDIR/acceptance.py --dtype float32
 
 或在原始碼目錄跑一鍵腳本：bash run_all.sh
 

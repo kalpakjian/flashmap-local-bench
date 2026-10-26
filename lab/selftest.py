@@ -68,6 +68,37 @@ m = {"vllm:spec_decode_num_accepted_tokens_total{a}": 300.0,
 check("metric_total 取得到值", B.metric_total(m, "spec_decode_num_accepted_tokens") == 300.0)
 check("不存在的 key 回傳 None", B.metric_total(m, "nonexistent") is None)
 
+print("[5] spec_decode_stats（γ = 1 + accepted/drafts）")
+# 完整的 Prometheus 家族：_total 與 _created 並存，且有 _per_pos_ 子家族。
+# 舊版用 substring 比對會把 1.79e9 的 timestamp 與 16 個 per-pos 家族加進去。
+m2 = {
+    "vllm:spec_decode_num_accepted_tokens_total{a}": 2475.0,
+    "vllm:spec_decode_num_accepted_tokens_created{a}": 1792972682.5,
+    "vllm:spec_decode_num_drafts_total{a}": 626.0,
+    "vllm:spec_decode_num_drafts_created{a}": 1792972682.5,
+    "vllm:spec_decode_num_draft_tokens_total{a}": 10016.0,
+    "vllm:spec_decode_num_draft_tokens_created{a}": 1792972682.5,
+    "vllm:spec_decode_num_accepted_tokens_per_pos_total{a,position=\"0\"}": 509.0,
+    "vllm:spec_decode_num_accepted_tokens_per_pos_total{a,position=\"1\"}": 404.0,
+    "vllm:spec_decode_num_accepted_tokens_per_pos_created{a,position=\"0\"}": 1792972682.5,
+}
+sd = B.spec_decode_stats(m2)
+check("γ 不受 _created / _per_pos_ 污染", abs(sd["gamma_tokens_per_step"] - 4.954) < 0.001, str(sd))
+check("接受率 = accepted/draft_tokens", abs(sd["acceptance_fraction"] - 0.2471) < 1e-4, str(sd))
+check("每步草擬 token 數", abs(sd["draft_tokens_per_step"] - 16.0) < 1e-6, str(sd))
+check("metric 為空時不炸", B.spec_decode_stats({}) == {})
+
+print("[6] compare_outputs（伺服器端無損性）")
+b0 = [{"id": 0, "category": "math", "output_head": "abc", "output_text": "abcdef", "completion_tokens": 2},
+      {"id": 1, "category": "chat", "output_head": "xyz", "output_text": "xyz", "completion_tokens": 1}]
+f0 = [{"id": 0, "category": "math", "output_head": "abc", "output_text": "abcdef", "completion_tokens": 2},
+      {"id": 1, "category": "chat", "output_head": "xyq", "output_text": "xyq", "completion_tokens": 1}]
+co = B.compare_outputs(b0, f0)
+check("完整相同只算真正相同的那題", co["identical_text"] == 1, str(co))
+check("前 120 字相同只算那題", co["identical_head"] == 1, str(co))
+check("記錄第一個不同字元", co["rows"][1]["first_char_diff"] == 2, str(co["rows"][1]))
+check("token 差值", co["rows"][0]["token_delta"] == 0)
+
 print()
 if FAILS:
     print(f"[RESULT] {len(FAILS)} 項未通過：{FAILS}")

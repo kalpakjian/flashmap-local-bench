@@ -94,11 +94,20 @@ bash run_all.sh
 **判讀順序**
 
 1. `report.md` 的「ALL」列 → 加速比（這是本實驗的主指標）
-2. `results_acceptance_step1.json` 的 `summary.ALL.all_lossless` → 必須是 `true`
-   （若為 false，代表該版本或該設定下**沒有**無損保證，屬重要發現）
-3. 接受長度 γ 對照論文（Qwen3-8B, T=0, 1 step）：數學 ~6.0–7.7、程式 ~5.0–6.7、聊天 ~3.1–3.7。
+2. `report.md` 的「伺服器端輸出比對」→ **這才是使用者真正在意的無損性**：
+   同一個 vLLM、temperature=0，開關 FlashMap 前後回答有沒有變。
+3. `results_acceptance_step1.json` 的 `summary.ALL.all_lossless` → **這一項在 bf16 下不可信**。
+   `torch.equal` 逐 token 比對，而 bf16 的 logits 解析度只有 ~2⁻⁸ ≈ 0.0039（在 logit≈1 處），
+   top-2 logit 差距小於 bf16 評測誤差時，argmax 會由四捨五入決定 ——
+   這不是演算法錯誤。**嚴格檢查請用 `--dtype float32`**（上游 `examples/benchmark.py`
+   明文建議），此時同一組程式在 4B 上 12/12 逐 token 完全相同。
+   詳見 `FINDINGS.md` 與 `pass3_bf16_proof.py` / `pass4_bf16_shape.py` / `pass5_fp32_cpu_truth.py`。
+4. 接受長度 γ 對照論文（Qwen3-8B, T=0, 1 step）：數學 ~6.0–7.7、程式 ~5.0–6.7、聊天 ~3.1–3.7。
    本機若明顯偏低，先確認 `--max-tokens` 沒太小（太短會讓接受長度統計失真）。
-4. 聊天類加速本來就低於數學/程式（開源性文字有很多合理續寫），這與論文一致。
+5. 聊天類加速本來就低於數學/程式（開源性文字有很多合理續寫），這與論文一致。
+6. `lossless_prefix_ok` 與 `spec_overshoot`：最後一次驗證 pass 會衝過 `max_new_tokens`
+   （上游文件明載），此時兩者互為前綴、在 `max_new_tokens` 內完全一致，
+   不應算成無損性失敗。
 
 ---
 
@@ -112,8 +121,8 @@ bash run_all.sh
 | CUDA out of memory | 24 GB 卡塞不下 | 降 `--gpu-memory-utilization`（bench.py 內，預設 0.90 → 0.80）、降 `--max-model-len`、或用 Qwen3-4B drafter |
 | `transformers` 版本衝突 | vLLM 0.31.0 要求 `>=5.10.4,<5.18.0` | 別手動升級 transformers，讓 vLLM 決定 |
 | server 起來但加速比 <1 | drafter 沒真的啟用 | 查 `vllm_flashmap.log` 是否有 speculative decoding 字樣；確認 `--speculative-config` 格式正確 |
-| 只想快速驗證無損性 | 不需要起 server | `python acceptance.py --max-new-tokens 256` |
-| 只想快速驗證無損性 | 不需要起 server | `python acceptance.py --max-new-tokens 256` |
+| 只想快速驗證無損性 | 不需要起 server | `python acceptance.py --max-new-tokens 256 --dtype float32` |
+| `all_lossless=false` 但想知道是不是真的壞了 | bf16 的近似並列 | 跑 `python acceptance.py --dtype float32`；若 12/12 相同就是數值假象（見 `FINDINGS.md`） |
 
 ---
 
@@ -124,9 +133,14 @@ bash run_all.sh
 | `setup.sh` | 冪等環境建置：檢查 → 裝 uv → py3.12 venv → 裝 vllm/flashmap → CUDA smoke → 下載模型 |
 | `run_all.sh` | 一鍵跑完 Phase 1 + Phase 2 並列出產出 |
 | `acceptance.py` | Part 1：接受長度 γ + 無損性（transformers 參考實作，不需要 server） |
-| `bench.py` | Part 2：端到端 tok/s（vLLM，基準 vs FlashMap）＋報告產生 |
+| `bench.py` | Part 2：端到端 tok/s（vLLM，基準 vs FlashMap）＋報告產生＋伺服器端輸出比對 |
+| `pass3_bf16_proof.py` | 機制驗證：每個分歧點在共享前綴上的 fp32 真值 vs bf16 解析度 |
+| `pass4_bf16_shape.py` | 機制驗證：基準呼叫簽章（2×2）＋前向形狀（batch 1 vs 17）對 bf16 argmax 的影響 |
+| `pass5_fp32_cpu_truth.py` | 機制驗證：8B 的 fp32 真值（CPU 上做，繞過 24 GB 限制） |
 | `selftest.py` | 不需 GPU 的邏輯自測，重開機後可先跑 |
 | `prompts.json` | 12 題固定測試集（數學 5 / 程式 4 / 聊天 3） |
+| `FINDINGS.md` | 驗證結論：Phase 1 的 `all_lossless=false` 是 bf16 數值假象的完整證據鏈 |
+| `FINDINGS-easy.md` | 同上，但沒有數字與公式的白話版（給不想讀表格的人） |
 | `README.md` | 本文件 |
 
 ---
