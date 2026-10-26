@@ -16,15 +16,23 @@ def main():
     try:
         import torch
         import transformers
+        import flashmap
     except ImportError as e:
         print(f"  [fail] 匯入失敗：{e}")
+        print("         請先跑 setup.sh（會安裝 vllm / flashmap），或確認 venv 已啟用。")
         return 1
 
-    import flashmap
+    # flashmap 套件沒有 __version__ 屬性，改用套件中介資料（舊寫法會印 n/a）
+    try:
+        import importlib.metadata as _md
+
+        fmap_ver = _md.version("flashmap")
+    except Exception:
+        fmap_ver = getattr(flashmap, "__version__", "n/a")
 
     print(f"  torch        {torch.__version__}")
     print(f"  transformers {transformers.__version__}")
-    print(f"  flashmap     {getattr(flashmap, '__version__', 'n/a')}")
+    print(f"  flashmap     {fmap_ver}")
 
     avail = torch.cuda.is_available()
     print(f"  cuda avail   {avail}")

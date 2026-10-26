@@ -23,13 +23,21 @@ FlashMap 是一個**推測解碼（speculative decoding）的 drafter**：用連
 git clone https://github.com/kalpakjian/flashmap-local-bench.git
 cd flashmap-local-bench/lab
 
-bash prepare_models.sh --from-windows   # 從 Windows 分割區搬模型（省 16 GB 下載）
-source ~/flashmap-lab/models/env.sh
-bash setup.sh      # 建環境 + 安裝 vllm/flashmap
-bash run_all.sh    # Phase 1: γ + 無損性；Phase 2: 端到端 tok/s
+# ① 模型：兩條路選一條
+bash prepare_models.sh --from-windows   # A. 有 Windows 分割區 → 先搬（不需要 venv，省 16 GB 下載）
+#   B. 沒有 Windows 分割區 → 跳過這步，讓 setup.sh 直接下載（見 ②）
+#      或先建好環境再下載：bash setup.sh && bash prepare_models.sh --download
+
+source ~/flashmap-lab/models/env.sh     # 只有走 A（或先下載）才需要
+
+bash setup.sh      # ② 建環境 + 安裝 vllm/flashmap/datasets（冪等）
+bash run_all.sh    # ③ Phase 1: γ + 無損性；Phase 2: 端到端 tok/s
 ```
 
 > 只有 Linux 能跑 **Phase 2（端到端 tok/s）**，因為 vLLM / SGLang 在 PyPI 只有 manylinux wheel。
+>
+> `prepare_models.sh --download` 需要一個裝了 `huggingface_hub` 的 Python；腳本會自己找
+> `$WORKDIR/.venv/bin/python`，找不到就明確告訴你要先跑 `setup.sh`（不會再丟 `ModuleNotFoundError`）。
 
 ### Windows 原生（只跑 Phase 1）
 

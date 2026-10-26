@@ -148,6 +148,25 @@ bash run_all.sh
 > 不能直接當 HF 快取搬到 Linux 給 huggingface_hub 辨識，但那個 snapshot 目錄
 > 本身就是完整可用的模型目錄，直接複製過去即可（實測兩個目錄共 16.2 GB、檔案齊全）。
 
+> **三個 Linux 專屬的坑（腳本已處理，2026-10-26）**
+>
+> 1. **`cp -r` 會搬出整批斷鏈**：Linux 的 HF 快取是 *symlink 農場*
+>    （`snapshots/<sha>/config.json -> ../../blobs/<hash>`）。用 `cp -r` 會把連結原樣
+>    搬過去，目標目錄只有幾十 KB、載入模型時才炸（Windows 因為沒有 symlink 權限
+>    反而是實體檔案，所以測不出來）。現在一律 `cp -rL` 解參照，並用
+>    `find -xtype l` 驗證沒有殘留斷鏈。
+> 2. **`FlashMap-FlashMap-Qwen3-8B`**：下載分支原本對 `j-shen/FlashMap-Qwen3-8B`
+>    再加一次 `FlashMap-` 前綴，目錄名會重複。
+> 3. **舊目錄會讓 `cp -L` 拒寫**：上一次失敗留下的斷鏈還在時，GNU `cp` 會
+>    `not writing through dangling symlink`；現在複製前先 `rm -rf` 目標目錄。
+>
+> 另外 `--download` 需要裝了 `huggingface_hub` 的 Python（本腳本排在 `setup.sh`
+> 之前，那時 venv 還沒建好）。腳本會自動找 `$WORKDIR/.venv/bin/python`，
+> 都找不到時給出可操作的指示，而不是丟 `ModuleNotFoundError`。
+
+> **升級 repo 後要用 `--dataset`**：`datasets` 是新加的相依（`setup.sh` 已含）。
+> 既有環境請 `uv pip install datasets`；`python selftest.py` 的 §8 會提示。
+
 `setup.sh` 做什麼：
 
 - 檢查 pacman / nvidia-smi / 磁碟空間

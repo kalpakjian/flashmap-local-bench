@@ -72,7 +72,9 @@ uv --version
 log "3/6 建立 Python 3.12 虛擬環境並安裝套件"
 # vLLM 0.31.0 與 SGLang 0.5.20 都鎖 torch==2.13.0；flashmap 0.1.0 額外要求 >=3.10
 # flashmap[vllm] 的約束是 vllm>=0.31,<0.32 -> 目前只有 0.31.0
-uv venv --python 3.12 "$VENV"
+# --allow-existing：uv >= 0.8 對已存在的 venv 會直接報錯，
+# 沒有這個旗標的話「冪等」就不成立（第二次執行會死在這裡）。
+uv venv --python 3.12 --allow-existing "$VENV"
 # shellcheck disable=SC1091
 source "$VENV/bin/activate"
 uv pip install --upgrade pip
@@ -101,9 +103,9 @@ cat <<EOF
   cd $WORKDIR
   source .venv/bin/activate
   # 執行完整實驗（接受長度 + 無損性 + 端到端 tok/s）
-  python $WORKDIR/bench.py
+  python $HERE/bench.py
   # 嚴格「無損性」檢查請用 fp32（bf16 的近似並列會造成假性 MISMATCH）
-  python $WORKDIR/acceptance.py --dtype float32
+  python $HERE/acceptance.py --dtype float32
 
 或在原始碼目錄跑一鍵腳本：bash run_all.sh
 

@@ -113,6 +113,16 @@ check("humaneval prompt 格式與上游一致（```python 區塊）",
 mt_field = A.DATASETS["mt-bench"][3]
 check("mt-bench 取第一輪 prompt", mt_field({"prompt": ["hi", "there"]}) == "hi")
 
+print("[8] 選用相依：datasets（--dataset 模式才需要）")
+try:
+    import datasets  # noqa: F401
+    print(f"  [PASS] datasets 已安裝 {datasets.__version__}")
+except ImportError:
+    # 刻意不算失敗：CI 只裝標準庫，而 --dataset 是本機選用功能。
+    print("  [NOTE] 沒裝 datasets → acceptance.py --dataset 會 ModuleNotFoundError。")
+    print("         安裝：bash setup.sh（新版會一併裝）或 uv pip install datasets")
+    print("         既有環境升級 repo 後若要用 --dataset，記得補這一步。")
+
 print()
 if FAILS:
     print(f"[RESULT] {len(FAILS)} 項未通過：{FAILS}")
